@@ -129,7 +129,13 @@ def interact(player: Player) -> tuple[str, bool]:
     if not nearby:
         return "Hier ist nichts zum Interagieren. Geh naeher an ein Objekt heran.", False
 
-    place = nearby[0]
+    place = min(
+        nearby,
+        key=lambda candidate: (
+            scale_coordinate(candidate.x) - player.x
+        ) ** 2
+        + (scale_coordinate(candidate.y) - player.y) ** 2,
+    )
     if place.kind == "chest":
         if place.used:
             return "Die Truhe ist leer.", False
@@ -150,7 +156,10 @@ class GameWindow:
         validate_grid()
         self.root = root
         root.title("Das kleine Abenteuer")
-        root.attributes("-fullscreen", True)
+        try:
+            root.attributes("-fullscreen", True)
+        except tk.TclError:
+            root.attributes("-fullscreen", False)
         root.configure(bg="#1c2630")
 
         available_width = root.winfo_screenwidth()
@@ -354,7 +363,12 @@ class GameWindow:
 
 
 def main() -> None:
-    root = tk.Tk()
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        print("Das Spiel konnte keine grafische Oberfläche öffnen. Bitte in einer Desktop-Umgebung mit GUI ausführen.")
+        return
+
     GameWindow(root)
     root.mainloop()
 
