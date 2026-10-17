@@ -1,0 +1,15 @@
+# Python virtual environments
+/.venv/
+/venv/
+/Include/
+/Lib/
+/Scripts/
+/bin/
+/lib/
+/lib64/
+/share/
+/pyvenv.cfg
+
+# Python cache
+__pycache__/
+*.py[cod]
