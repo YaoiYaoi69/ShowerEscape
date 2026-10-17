@@ -72,7 +72,7 @@ class Place:
 PLACES = [
     Place("Truhe", 216, 120, "Eine alte Truhe. Darin liegt ein kleiner Messingschluessel.", "chest"),
     Place("Schild", 408, 168, "Auf dem Schild steht: Finde den Schluessel und suche den Ausgang im Osten.", "sign"),
-    Place("Waechter", 600, 312, "Der Waechter sagt: Der Ausgang liegt ganz im Osten. Ohne Schluessel bleibt er zu.", "guard"),
+    Place("Yumenko", 600, 312, "Yumenko sagt: Der Ausgang liegt ganz im Osten. Ohne Schluessel bleibt er zu.", "guard"),
     Place("Ausgang", 696, 72, "Der Ausgang ist verschlossen.", "exit"),
 ]
 
@@ -191,7 +191,7 @@ class GameWindow:
             Path(__file__).resolve().parent,
             Path(__file__).resolve().parent
             / "models"
-            / "qwen3.5-0.8b-Q4_K_M.gguf",
+            / "Qwen3-VL-4B-Instruct-Uncensored.Q4_K_M.gguf",
         )
         self.guardian_history: list[dict[str, str]] = []
         self.guardian_busy = False
@@ -206,6 +206,9 @@ class GameWindow:
         self.guardian_queue: Queue[tuple[bool, str | None, str]] = Queue()
         self.guardian_warmup_queue: Queue[tuple[bool, str | None]] = Queue()
         self.guardian_warmup_started = False
+        self.loading_dialog: tk.Toplevel | None = None
+        self.loading_status: tk.Label | None = None
+        self.loading_retry_button: tk.Button | None = None
         self.background_images = self.load_background_images()
         root.protocol("WM_DELETE_WINDOW", self.close_game)
 
@@ -246,7 +249,7 @@ class GameWindow:
 
         self.guardian_chat_button = tk.Button(
             root,
-            text="Mit dem Wächter chatten",
+            text="Mit Yumenko chatten",
             command=self.open_guard_dialog,
             font=("Segoe UI", 11, "bold"),
             fg="#f1f5f9",
@@ -260,7 +263,7 @@ class GameWindow:
 
         controls = tk.Label(
             root,
-            text="WASD bewegen    E interagieren    T Wächter-Chat    Esc beenden",
+            text="WASD bewegen    E interagieren    T Yumenko-Chat    Esc beenden",
             font=("Segoe UI", 10),
             fg="#94a3b8",
             bg="#1c2630",
@@ -270,8 +273,44 @@ class GameWindow:
 
         root.bind_all("<KeyPress>", self.on_key)
         self.draw()
+        self.show_loading_dialog()
         root.after(200, self.start_guardian_warmup)
         root.after(100, self.poll_guardian_warmup)
+
+    def show_loading_dialog(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("ShowerEscape")
+        dialog.geometry("420x150")
+        dialog.resizable(False, False)
+        dialog.configure(bg="#1c2630")
+        dialog.protocol("WM_DELETE_WINDOW", self.close_game)
+
+        self.loading_status = tk.Label(
+            dialog,
+            text="Yumenkos KI wird geladen. Das Spiel startet danach automatisch ...",
+            font=("Segoe UI", 11),
+            fg="#e2e8f0",
+            bg="#1c2630",
+            wraplength=380,
+            pady=24,
+        )
+        self.loading_status.pack(fill="x")
+
+        self.loading_retry_button = tk.Button(
+            dialog,
+            text="Erneut versuchen",
+            command=self.start_guardian_warmup,
+            font=("Segoe UI", 10, "bold"),
+            fg="#f1f5f9",
+            bg="#6d28d9",
+            activebackground="#7c3aed",
+            activeforeground="#ffffff",
+        )
+        dialog.update_idletasks()
+        x = max(0, (dialog.winfo_screenwidth() - 420) // 2)
+        y = max(0, (dialog.winfo_screenheight() - 150) // 2)
+        dialog.geometry(f"420x150+{x}+{y}")
+        self.loading_dialog = dialog
 
     def load_background_images(self) -> dict[str, tk.PhotoImage]:
         images: dict[str, tk.PhotoImage] = {}
@@ -433,9 +472,12 @@ class GameWindow:
         if self.guardian_warmup_started:
             return
         self.guardian_warmup_started = True
-        self.message_label.config(
-            text="Der Wächter lädt seine lokale KI im Hintergrund ..."
-        )
+        if self.loading_status is not None:
+            self.loading_status.config(
+                text="Yumenkos KI wird geladen. Das Spiel startet danach automatisch ..."
+            )
+        if self.loading_retry_button is not None:
+            self.loading_retry_button.pack_forget()
 
         def warm_up() -> None:
             try:
@@ -457,12 +499,21 @@ class GameWindow:
 
         if succeeded:
             self.message_label.config(
-                text="Die Wächter-KI ist geladen. Gehe zum Wächter und chatte mit ihm."
+                text="Yumenko ist bereit. Gehe zu ihr und chatte mit ihr."
             )
+            if self.loading_dialog is not None and self.loading_dialog.winfo_exists():
+                self.loading_dialog.destroy()
+            self.loading_dialog = None
+            self.root.deiconify()
         else:
-            self.message_label.config(
-                text=f"Wächter-KI konnte nicht geladen werden: {error}"
-            )
+            self.guardian_warmup_started = False
+            if self.loading_status is not None:
+                self.loading_status.config(
+                    text=f"Yumenkos KI konnte nicht geladen werden:\n{error}"
+                )
+            if self.loading_retry_button is not None:
+                self.loading_retry_button.pack(pady=(0, 12))
+            self.root.after(100, self.poll_guardian_warmup)
 
     def open_guard_dialog(self) -> None:
         if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
@@ -470,7 +521,7 @@ class GameWindow:
             return
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("Der Wächter")
+        dialog.title("Yumenko")
         dialog.geometry("520x440")
         dialog.resizable(True, True)
         dialog.transient(self.root)
@@ -493,7 +544,7 @@ class GameWindow:
         )
         self.guardian_status = tk.Label(
             dialog,
-            text="Der Wächter denkt nach ...",
+            text="Yumenko denkt nach ...",
             fg="#94a3b8",
             bg="#1c2630",
         )
@@ -522,7 +573,7 @@ class GameWindow:
         dialog.after_idle(self.guardian_input.focus_force)
 
         for entry in self.guardian_history:
-            speaker = "Du" if entry["role"] == "user" else "Wächter"
+            speaker = "Du" if entry["role"] == "user" else "Yumenko"
             self.append_guardian_text(speaker, entry["content"])
         if not self.guardian_greeting_started:
             self.guardian_greeting_started = True
@@ -531,7 +582,7 @@ class GameWindow:
             self.guardian_status.config(text="Die lokale KI antwortet gerade ...")
             self.guardian_send_button.config(state="disabled")
         else:
-            self.guardian_status.config(text="Stelle deine Frage an den Wächter.")
+            self.guardian_status.config(text="Stelle Yumenko eine Frage.")
         self.poll_guardian_queue()
 
     def close_guard_dialog(self) -> None:
@@ -602,7 +653,7 @@ class GameWindow:
             if message is not None:
                 self.guardian_history.append({"role": "user", "content": message})
             self.guardian_history.append({"role": "assistant", "content": result})
-            self.append_guardian_text("Wächter", result)
+            self.append_guardian_text("Yumenko", result)
             if self.guardian_status is not None:
                 self.guardian_status.config(text="")
         else:
@@ -625,6 +676,7 @@ def main() -> None:
         print("Das Spiel konnte keine grafische Oberfläche öffnen. Bitte in einer Desktop-Umgebung mit GUI ausführen.")
         return
 
+    root.withdraw()
     GameWindow(root)
     root.mainloop()
 

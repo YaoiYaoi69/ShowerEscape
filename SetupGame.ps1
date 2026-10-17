@@ -4,7 +4,7 @@ $project = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pythonDirectory = Join-Path $project ".runtime\python"
 $ollamaDirectory = Join-Path $project "tools\ollama"
 $ollamaArchive = Join-Path $project ".runtime\ollama-windows-amd64.zip"
-$modelPath = Join-Path $project "models\qwen3.5-0.8b-Q4_K_M.gguf"
+$modelPath = Join-Path $project "models\Qwen3-VL-4B-Instruct-Uncensored.Q4_K_M.gguf"
 $pythonInstaller = Join-Path $project ".runtime\python-3.13.16-amd64.exe"
 
 New-Item -ItemType Directory -Force (Join-Path $project ".runtime") | Out-Null
@@ -63,20 +63,20 @@ if (-not (Test-Path (Join-Path $ollamaDirectory "ollama.exe"))) {
 }
 
 if (-not (Test-Path $modelPath)) {
-    Write-Host "Lade das Wächter-Modell herunter (ca. 530 MB)..."
+    Write-Host "Lade Yumenkos Modell herunter (ca. 2,5 GB)..."
     $temporaryModel = "$modelPath.download"
     Invoke-WebRequest `
-        -Uri "https://huggingface.co/diodel/Qwen3.5-0.8B-Q4_K_M-GGUF/resolve/main/qwen3.5-0.8b-Q4_K_M.gguf" `
+        -Uri "https://huggingface.co/mradermacher/Qwen3-VL-4B-Instruct-Uncensored-GGUF/resolve/6d93457e019e051d38a6268f9884ece33efdb258/Qwen3-VL-4B-Instruct-Uncensored.Q4_K_M.gguf" `
         -OutFile $temporaryModel
     $model = Get-Item -LiteralPath $temporaryModel
-    if ($model.Length -ne 529297312) {
+    if ($model.Length -ne 2497282496) {
         Remove-Item -LiteralPath $temporaryModel -Force
-        throw "Modell-Download unvollständig: $($model.Length) Bytes statt 529297312."
+        throw "Modell-Download unvollständig: $($model.Length) Bytes statt 2497282496."
     }
     Move-Item -LiteralPath $temporaryModel -Destination $modelPath
 }
 
-$expectedHash = "FB89581C3863314F6E6E1810F11B0BBB30A07315E7B1229A5C7DB10FB0100CA6"
+$expectedHash = "16146EB3978364E89593C2D9F5A0B905F528733B5FA5AFA0BD5E25F4D8AD6848"
 $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $modelPath).Hash
 if ($actualHash -ne $expectedHash) {
     throw "Die SHA-256-Prüfung des Modells ist fehlgeschlagen."

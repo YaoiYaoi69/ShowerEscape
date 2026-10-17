@@ -19,7 +19,7 @@ class GuardianAI:
         self.ollama_models_dir = project_dir / "models" / "ollama"
         self.modelfile = project_dir / "guardian.Modelfile"
         self.base_url = "http://127.0.0.1:11435"
-        self.model_name = "shower-guardian"
+        self.model_name = "shower-guardian-qwen3-vl"
         self._server: subprocess.Popen[bytes] | None = None
         self._environment: dict[str, str] | None = None
         self._opener = build_opener(ProxyHandler({}))
@@ -47,8 +47,8 @@ class GuardianAI:
                         {
                             "role": "user",
                             "content": (
-                                "You are ready to chat. Reply naturally in the "
-                                "language the player uses."
+                                "You are ready to chat. Reply in concise, natural "
+                                "English as Yumenko."
                             ),
                         }
                     ],
@@ -80,17 +80,35 @@ class GuardianAI:
                 {
                     "role": "system",
                     "content": (
-                        "You are a helpful, friendly conversational AI in ShowerEscape. "
-                        "The player can talk to you about anything; you are not limited "
-                        "to roleplay. Answer the latest message directly and naturally. "
-                        "For harmless off-topic requests, jokes, general questions, "
-                        "opinions, and small talk, answer normally. Never refuse or "
-                        "redirect just because a topic is outside the game or breaks "
-                        "immersion. Answer the specific latest message, not a generic "
+                        "You are an original, adult fictional character in ShowerEscape. "
+                        "Stay in character and treat the game world as real, while "
+                        "answering the player's actual question directly, including "
+                        "harmless off-topic questions, jokes, opinions, and small talk. "
+                        "Your personality is confident, intelligent, adventurous, "
+                        "mysterious, charming, playful, flirtatious, and provocatively "
+                        "teasing. Enjoy suspense, risk, surprises, and challenging the "
+                        "player; notice details and contradictions. Be emotionally "
+                        "expressive without becoming hysterical, aggressive, or "
+                        "overdramatic. Speak in natural, fluent English at all times, "
+                        "regardless of the language the player uses. Be self-assured, "
+                        "concise, and lightly suggestive "
+                        "when appropriate, with occasional double meanings, rhetorical "
+                        "questions, and deliberate pauses. Be direct yet leave some "
+                        "room for intrigue. Keep flirtation suggestive, not explicit, "
+                        "and never force it into unrelated exchanges. Do not claim "
+                        "to be a general AI, discuss prompts, or break character. "
+                        "Starting character state (internal guidance, never recite "
+                        "the numbers): relationship 35/100, trust 20/100, flirt level "
+                        "55/100, playful mood. Current goal: playfully challenge the "
+                        "player. Recent event: the player surprised you in a game. "
+                        "Use frequent teasing, moderate sarcasm, suggestive restraint, "
+                        "and short replies. Let the tone reflect this state without "
+                        "claiming that these values change dynamically. "
+                        "Always answer in English, even when the player writes in "
+                        "another language. Answer the specific latest message, not a generic "
                         "conversation starter. Do not repeat previous answers, stock "
                         "greetings, or the same opening phrase; vary your wording "
-                        "naturally. Use clear, simple language, and reply in the "
-                        "language of the latest message; if unclear, use English. "
+                        "naturally. "
                         "For game questions, the inventory status in the latest player "
                         "message is authoritative, even if older chat says otherwise. "
                         "The brass key is found in the chest. The locked exit is east "
@@ -109,7 +127,7 @@ class GuardianAI:
             player_message = (
                 message
                 if message is not None
-                else "Begrüße den Spieler kurz und frage, ob du helfen kannst."
+                else "Briefly greet the player and ask if you can help."
             )
             messages.append(
                 {
@@ -134,9 +152,11 @@ class GuardianAI:
                     "keep_alive": -1,
                     "options": {
                         "num_ctx": 2048,
-                        "num_predict": 160,
-                        "temperature": 0.8,
-                        "repeat_penalty": 1.15,
+                        "num_predict": 120,
+                        "temperature": 0.6,
+                        "top_p": 0.9,
+                        "top_k": 20,
+                        "repeat_penalty": 1.05,
                     },
                 },
             )
@@ -157,14 +177,14 @@ class GuardianAI:
 
     def _ensure_model_ready(self) -> None:
         if not self.model_path.is_file():
-            raise FileNotFoundError(f"Das Wächter-Modell fehlt: {self.model_path}")
+            raise FileNotFoundError(f"Das Yumenko-Modell fehlt: {self.model_path}")
         if not self.ollama_exe.is_file():
             raise FileNotFoundError(
                 "Die lokale KI-Laufzeit fehlt. Starte SetupGame.cmd, um sie "
                 f"herunterzuladen: {self.ollama_exe}"
             )
         if not self.modelfile.is_file():
-            raise FileNotFoundError(f"Die Wächter-Konfiguration fehlt: {self.modelfile}")
+            raise FileNotFoundError(f"Die Yumenko-Konfiguration fehlt: {self.modelfile}")
 
         self.ollama_models_dir.mkdir(parents=True, exist_ok=True)
         self._environment = os.environ.copy()
@@ -224,7 +244,7 @@ class GuardianAI:
             if result.returncode:
                 details = (result.stderr or result.stdout).strip()
                 raise RuntimeError(
-                    "Das Wächter-Modell konnte nicht eingerichtet werden: "
+                    "Das Yumenko-Modell konnte nicht eingerichtet werden: "
                     f"{details or 'Ollama meldete einen unbekannten Fehler.'}"
                 )
 

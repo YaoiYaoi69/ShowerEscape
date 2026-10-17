@@ -38,19 +38,25 @@ class GuardianAITests(unittest.TestCase):
         self.assertEqual(result, "Der Ausgang ist im Osten.")
         endpoint, payload = request.call_args.args
         self.assertEqual(endpoint, "/api/chat")
-        self.assertEqual(payload["model"], "shower-guardian")
+        self.assertEqual(payload["model"], "shower-guardian-qwen3-vl")
         self.assertEqual(payload["stream"], False)
         self.assertEqual(payload["think"], False)
-        self.assertEqual(payload["options"]["num_predict"], 160)
+        self.assertEqual(payload["options"]["num_predict"], 120)
         self.assertEqual(payload["options"]["num_ctx"], 2048)
-        self.assertEqual(payload["options"]["temperature"], 0.8)
-        self.assertEqual(payload["options"]["repeat_penalty"], 1.15)
-        self.assertIn("not limited to roleplay", payload["messages"][0]["content"])
-        self.assertIn("language of the latest message", payload["messages"][0]["content"])
+        self.assertEqual(payload["options"]["temperature"], 0.6)
+        self.assertEqual(payload["options"]["top_p"], 0.9)
+        self.assertEqual(payload["options"]["top_k"], 20)
+        self.assertEqual(payload["options"]["repeat_penalty"], 1.05)
+        self.assertIn("Stay in character", payload["messages"][0]["content"])
+        self.assertIn("harmless off-topic questions", payload["messages"][0]["content"])
+        self.assertIn("natural, fluent English at all times", payload["messages"][0]["content"])
+        self.assertIn("Always answer in English", payload["messages"][0]["content"])
         self.assertIn("Do not repeat previous answers", payload["messages"][0]["content"])
         self.assertIn("Answer the specific latest message", payload["messages"][0]["content"])
-        self.assertIn("For harmless off-topic requests", payload["messages"][0]["content"])
-        self.assertIn("Never refuse or redirect", payload["messages"][0]["content"])
+        self.assertIn("confident, intelligent, adventurous", payload["messages"][0]["content"])
+        self.assertIn("relationship 35/100, trust 20/100", payload["messages"][0]["content"])
+        self.assertIn("flirt level 55/100", payload["messages"][0]["content"])
+        self.assertIn("Keep flirtation suggestive, not explicit", payload["messages"][0]["content"])
         self.assertEqual(payload["messages"][1]["content"], "Willkommen.")
         self.assertIn("Brass key in player inventory: YES", payload["messages"][2]["content"])
         self.assertIn("Player's message: Kann ich passieren?", payload["messages"][2]["content"])
@@ -100,7 +106,7 @@ class GuardianAITests(unittest.TestCase):
             ai.warm_up()
 
         warmup_prompt = request.call_args.args[1]["messages"][0]["content"]
-        self.assertIn("Reply naturally in the language the player uses", warmup_prompt)
+        self.assertIn("Reply in concise, natural English", warmup_prompt)
 
     def test_requires_portable_ollama_runtime(self):
         ai = GuardianAI(self.project_dir, Path(self.model_file.name))
@@ -129,14 +135,14 @@ class GuardianAITests(unittest.TestCase):
         with patch.object(ai, "_ensure_model_ready") as ensure_ready, patch.object(
             ai,
             "_request_json",
-            return_value={"message": {"content": "Wächter."}},
+            return_value={"message": {"content": "Yumenko."}},
         ) as request:
             ai.warm_up()
 
         ensure_ready.assert_called_once_with()
         endpoint, payload = request.call_args.args
         self.assertEqual(endpoint, "/api/chat")
-        self.assertEqual(payload["model"], "shower-guardian")
+        self.assertEqual(payload["model"], "shower-guardian-qwen3-vl")
         self.assertEqual(payload["keep_alive"], -1)
         self.assertEqual(payload["options"]["num_predict"], 1)
 
@@ -157,7 +163,7 @@ class GuardianAITests(unittest.TestCase):
 
             def open(self, request, timeout):
                 self.request = request
-                return io.BytesIO(b'{"model":"shower-guardian"}')
+                return io.BytesIO(b'{"model":"shower-guardian-qwen3-vl"}')
 
         ai = GuardianAI(self.project_dir, Path(self.model_file.name))
         opener = RecordingOpener()
@@ -166,7 +172,10 @@ class GuardianAITests(unittest.TestCase):
         ai._unload_model()
 
         self.assertEqual(opener.request.method, "POST")
-        self.assertEqual(opener.request.data, b'{"model": "shower-guardian", "keep_alive": 0}')
+        self.assertEqual(
+            opener.request.data,
+            b'{"model": "shower-guardian-qwen3-vl", "keep_alive": 0}',
+        )
 
 
 if __name__ == "__main__":
