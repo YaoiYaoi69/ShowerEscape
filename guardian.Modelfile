@@ -1,0 +1,3 @@
+FROM ./models/qwen3.5-0.8b-Q4_K_M.gguf
+PARAMETER num_ctx 2048
+PARAMETER num_predict 128

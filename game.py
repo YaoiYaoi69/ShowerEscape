@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from queue import Empty, Queue
+from threading import Thread
 import tkinter as tk
 from dataclasses import dataclass
 from math import gcd
 from pathlib import Path
+
+from guardian_ai import GuardianAI
 
 
 BASE_TILE_SIZE = 32
@@ -119,7 +123,7 @@ def is_position_blocked(x: float, y: float) -> bool:
     )
 
 
-def interact(player: Player) -> tuple[str, bool]:
+def nearby_place(player: Player) -> Place | None:
     nearby = [
         place
         for place in PLACES
@@ -127,15 +131,21 @@ def interact(player: Player) -> tuple[str, bool]:
         and abs(scale_coordinate(place.y) - player.y) <= scale_coordinate(48)
     ]
     if not nearby:
-        return "Hier ist nichts zum Interagieren. Geh naeher an ein Objekt heran.", False
-
-    place = min(
+        return None
+    return min(
         nearby,
         key=lambda candidate: (
             scale_coordinate(candidate.x) - player.x
         ) ** 2
         + (scale_coordinate(candidate.y) - player.y) ** 2,
     )
+
+
+def interact(player: Player) -> tuple[str, bool]:
+    place = nearby_place(player)
+    if place is None:
+        return "Hier ist nichts zum Interagieren. Geh naeher an ein Objekt heran.", False
+
     if place.kind == "chest":
         if place.used:
             return "Die Truhe ist leer.", False
@@ -177,7 +187,27 @@ class GameWindow:
         MOVE_DISTANCE = max(1, round(12 * SCALE_FACTOR))
         self.player = Player(x=scale_coordinate(120), y=scale_coordinate(120))
         self.won = False
+        self.guardian_ai = GuardianAI(
+            Path(__file__).resolve().parent,
+            Path(__file__).resolve().parent
+            / "models"
+            / "qwen3.5-0.8b-Q4_K_M.gguf",
+        )
+        self.guardian_history: list[dict[str, str]] = []
+        self.guardian_busy = False
+        self.guardian_greeting_started = False
+        self.guard_dialog: tk.Toplevel | None = None
+        self.guard_was_nearby = False
+        self.guardian_messages: tk.Text | None = None
+        self.guardian_input: tk.Entry | None = None
+        self.guardian_chat_button: tk.Button | None = None
+        self.guardian_status: tk.Label | None = None
+        self.guardian_send_button: tk.Button | None = None
+        self.guardian_queue: Queue[tuple[bool, str | None, str]] = Queue()
+        self.guardian_warmup_queue: Queue[tuple[bool, str | None]] = Queue()
+        self.guardian_warmup_started = False
         self.background_images = self.load_background_images()
+        root.protocol("WM_DELETE_WINDOW", self.close_game)
 
         title = tk.Label(
             root,
@@ -214,9 +244,23 @@ class GameWindow:
         )
         self.message_label.pack()
 
+        self.guardian_chat_button = tk.Button(
+            root,
+            text="Mit dem Wächter chatten",
+            command=self.open_guard_dialog,
+            font=("Segoe UI", 11, "bold"),
+            fg="#f1f5f9",
+            bg="#6d28d9",
+            activebackground="#7c3aed",
+            activeforeground="#ffffff",
+            padx=18,
+            pady=6,
+        )
+        self.guardian_chat_button.pack(pady=(8, 2))
+
         controls = tk.Label(
             root,
-            text="WASD bewegen    E interagieren    Esc beenden",
+            text="WASD bewegen    E interagieren    T Wächter-Chat    Esc beenden",
             font=("Segoe UI", 10),
             fg="#94a3b8",
             bg="#1c2630",
@@ -224,8 +268,10 @@ class GameWindow:
         )
         controls.pack()
 
-        root.bind("<KeyPress>", self.on_key)
+        root.bind_all("<KeyPress>", self.on_key)
         self.draw()
+        root.after(200, self.start_guardian_warmup)
+        root.after(100, self.poll_guardian_warmup)
 
     def load_background_images(self) -> dict[str, tk.PhotoImage]:
         images: dict[str, tk.PhotoImage] = {}
@@ -335,7 +381,15 @@ class GameWindow:
 
     def on_key(self, event: tk.Event) -> None:
         if event.keysym == "Escape":
-            self.root.destroy()
+            if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
+                self.close_guard_dialog()
+                return
+            self.close_game()
+            return
+        if event.keysym.lower() == "t":
+            self.open_guard_dialog()
+            return
+        if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
             return
         if self.won:
             return
@@ -354,12 +408,214 @@ class GameWindow:
         if key in directions:
             move(self.player, directions[key])
             self.draw()
+            place = nearby_place(self.player)
+            is_near_guard = place is not None and place.kind == "guard"
+            if is_near_guard and not self.guard_was_nearby:
+                self.open_guard_dialog()
+            self.guard_was_nearby = is_near_guard
         elif key == "e":
+            place = nearby_place(self.player)
+            if place is not None and place.kind == "guard":
+                self.open_guard_dialog()
+                return
             message, self.won = interact(self.player)
             self.message_label.config(text=message)
             self.draw()
             if self.won:
                 self.message_label.config(fg="#86efac")
+
+    def close_game(self) -> None:
+        self.close_guard_dialog()
+        self.guardian_ai.shutdown()
+        self.root.destroy()
+
+    def start_guardian_warmup(self) -> None:
+        if self.guardian_warmup_started:
+            return
+        self.guardian_warmup_started = True
+        self.message_label.config(
+            text="Der Wächter lädt seine lokale KI im Hintergrund ..."
+        )
+
+        def warm_up() -> None:
+            try:
+                self.guardian_ai.warm_up()
+            except Exception as error:
+                self.guardian_warmup_queue.put((False, str(error)))
+            else:
+                self.guardian_warmup_queue.put((True, None))
+
+        Thread(target=warm_up, daemon=True).start()
+
+    def poll_guardian_warmup(self) -> None:
+        try:
+            succeeded, error = self.guardian_warmup_queue.get_nowait()
+        except Empty:
+            if self.root.winfo_exists():
+                self.root.after(200, self.poll_guardian_warmup)
+            return
+
+        if succeeded:
+            self.message_label.config(
+                text="Die Wächter-KI ist geladen. Gehe zum Wächter und chatte mit ihm."
+            )
+        else:
+            self.message_label.config(
+                text=f"Wächter-KI konnte nicht geladen werden: {error}"
+            )
+
+    def open_guard_dialog(self) -> None:
+        if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
+            self.guard_dialog.lift()
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Der Wächter")
+        dialog.geometry("520x440")
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.configure(bg="#1c2630")
+        dialog.update_idletasks()
+        x = max(0, (dialog.winfo_screenwidth() - 520) // 2)
+        y = max(0, (dialog.winfo_screenheight() - 440) // 2)
+        dialog.geometry(f"520x440+{x}+{y}")
+        self.guard_dialog = dialog
+
+        self.guardian_messages = tk.Text(
+            dialog,
+            state="disabled",
+            wrap="word",
+            font=("Segoe UI", 10),
+            bg="#0f172a",
+            fg="#e2e8f0",
+            padx=10,
+            pady=10,
+        )
+        self.guardian_status = tk.Label(
+            dialog,
+            text="Der Wächter denkt nach ...",
+            fg="#94a3b8",
+            bg="#1c2630",
+        )
+
+        input_row = tk.Frame(dialog, bg="#1c2630")
+        input_row.pack(side="bottom", fill="x", padx=12, pady=12)
+        self.guardian_input = tk.Entry(input_row, font=("Segoe UI", 11))
+        self.guardian_input.pack(side="left", fill="x", expand=True, ipady=6)
+        self.guardian_send_button = tk.Button(
+            input_row, text="Senden", command=self.send_guardian_message
+        )
+        self.guardian_send_button.pack(side="left", padx=(8, 0))
+        self.guardian_status.pack(side="bottom", anchor="w", padx=14)
+        self.guardian_messages.pack(
+            side="top", fill="both", expand=True, padx=12, pady=(12, 6)
+        )
+        self.guardian_input.bind("<Return>", self.send_guardian_message)
+        dialog.bind("<Return>", self.send_guardian_message)
+        dialog.bind("<Escape>", lambda _event: self.close_guard_dialog())
+        dialog.protocol("WM_DELETE_WINDOW", self.close_guard_dialog)
+        dialog.grab_set()
+        dialog.deiconify()
+        dialog.lift()
+        dialog.attributes("-topmost", True)
+        dialog.after(500, lambda: dialog.winfo_exists() and dialog.attributes("-topmost", False))
+        dialog.after_idle(self.guardian_input.focus_force)
+
+        for entry in self.guardian_history:
+            speaker = "Du" if entry["role"] == "user" else "Wächter"
+            self.append_guardian_text(speaker, entry["content"])
+        if not self.guardian_greeting_started:
+            self.guardian_greeting_started = True
+            self.request_guardian_reply(None)
+        elif self.guardian_busy:
+            self.guardian_status.config(text="Die lokale KI antwortet gerade ...")
+            self.guardian_send_button.config(state="disabled")
+        else:
+            self.guardian_status.config(text="Stelle deine Frage an den Wächter.")
+        self.poll_guardian_queue()
+
+    def close_guard_dialog(self) -> None:
+        if self.guard_dialog is not None:
+            self.guard_dialog.grab_release()
+            self.guard_dialog.destroy()
+        self.guard_dialog = None
+        self.guardian_messages = None
+        self.guardian_input = None
+        self.guardian_status = None
+        self.guardian_send_button = None
+
+    def append_guardian_text(self, speaker: str, text: str) -> None:
+        if self.guardian_messages is None:
+            return
+        self.guardian_messages.config(state="normal")
+        self.guardian_messages.insert("end", f"{speaker}: {text}\n\n")
+        self.guardian_messages.config(state="disabled")
+        self.guardian_messages.see("end")
+
+    def send_guardian_message(self, _event: tk.Event | None = None) -> None:
+        if (
+            self.guardian_input is None
+            or self.guardian_send_button is None
+            or self.guardian_busy
+        ):
+            return
+        message = self.guardian_input.get().strip()
+        if not message:
+            return
+        self.guardian_input.delete(0, "end")
+        self.append_guardian_text("Du", message)
+        self.request_guardian_reply(message)
+
+    def request_guardian_reply(self, message: str | None) -> None:
+        self.guardian_busy = True
+        if self.guardian_send_button is not None:
+            self.guardian_send_button.config(state="disabled")
+        if self.guardian_input is not None:
+            self.guardian_input.config(state="disabled")
+        if self.guardian_status is not None:
+            self.guardian_status.config(
+                text="Die lokale KI antwortet ... Bitte kurz warten."
+            )
+        history = list(self.guardian_history)
+        has_key = self.player.has_key
+
+        def generate() -> None:
+            try:
+                reply = self.guardian_ai.reply(message, has_key, history)
+            except Exception as error:
+                self.guardian_queue.put((False, message, str(error)))
+            else:
+                self.guardian_queue.put((True, message, reply))
+
+        Thread(target=generate, daemon=True).start()
+
+    def poll_guardian_queue(self) -> None:
+        if self.guard_dialog is None or not self.guard_dialog.winfo_exists():
+            return
+        try:
+            succeeded, message, result = self.guardian_queue.get_nowait()
+        except Empty:
+            self.root.after(100, self.poll_guardian_queue)
+            return
+
+        if succeeded:
+            if message is not None:
+                self.guardian_history.append({"role": "user", "content": message})
+            self.guardian_history.append({"role": "assistant", "content": result})
+            self.append_guardian_text("Wächter", result)
+            if self.guardian_status is not None:
+                self.guardian_status.config(text="")
+        else:
+            self.append_guardian_text("Fehler", result)
+            if self.guardian_status is not None:
+                self.guardian_status.config(text="Die lokale KI konnte nicht antworten.")
+        self.guardian_busy = False
+        if self.guardian_send_button is not None:
+            self.guardian_send_button.config(state="normal")
+        if self.guardian_input is not None:
+            self.guardian_input.config(state="normal")
+            self.guardian_input.focus_set()
+        self.root.after(100, self.poll_guardian_queue)
 
 
 def main() -> None:

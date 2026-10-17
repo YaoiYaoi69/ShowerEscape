@@ -13,3 +13,9 @@
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Local language models
+/models/*.gguf
+/models/ollama/
+/tools/
+/.runtime/
