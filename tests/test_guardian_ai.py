@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from guardian_ai import GuardianAI
+from guardian_ai import GuardianAI, MAX_HISTORY_MESSAGES, MAX_RESPONSE_TOKENS
 
 
 class GuardianAITests(unittest.TestCase):
@@ -41,7 +41,7 @@ class GuardianAITests(unittest.TestCase):
         self.assertEqual(payload["model"], "shower-guardian-qwen3-vl")
         self.assertEqual(payload["stream"], False)
         self.assertEqual(payload["think"], False)
-        self.assertEqual(payload["options"]["num_predict"], 120)
+        self.assertEqual(payload["options"]["num_predict"], MAX_RESPONSE_TOKENS)
         self.assertEqual(payload["options"]["num_ctx"], 2048)
         self.assertEqual(payload["options"]["temperature"], 0.6)
         self.assertEqual(payload["options"]["top_p"], 0.9)
@@ -52,6 +52,8 @@ class GuardianAITests(unittest.TestCase):
         self.assertIn("natural, fluent English at all times", payload["messages"][0]["content"])
         self.assertIn("Always answer in English", payload["messages"][0]["content"])
         self.assertIn("Do not repeat previous answers", payload["messages"][0]["content"])
+        self.assertIn("Do not use emojis, emoticons, smileys, or kaomoji", payload["messages"][0]["content"])
+        self.assertIn("ideally under 30 words", payload["messages"][0]["content"])
         self.assertIn("Answer the specific latest message", payload["messages"][0]["content"])
         self.assertIn("confident, intelligent, adventurous", payload["messages"][0]["content"])
         self.assertIn("relationship 35/100, trust 20/100", payload["messages"][0]["content"])
@@ -60,6 +62,23 @@ class GuardianAITests(unittest.TestCase):
         self.assertEqual(payload["messages"][1]["content"], "Willkommen.")
         self.assertIn("Brass key in player inventory: YES", payload["messages"][2]["content"])
         self.assertIn("Player's message: Kann ich passieren?", payload["messages"][2]["content"])
+
+    def test_reply_limits_history_to_recent_messages(self):
+        ai = GuardianAI(self.project_dir, Path(self.model_file.name))
+        history = [
+            {"role": "user", "content": f"message {index}"}
+            for index in range(MAX_HISTORY_MESSAGES + 4)
+        ]
+        with patch.object(ai, "_ensure_model_ready"), patch.object(
+            ai,
+            "_request_json",
+            return_value={"message": {"content": "There you are."}},
+        ) as request:
+            ai.reply("Hello?", False, history)
+
+        messages = request.call_args.args[1]["messages"]
+        self.assertEqual(len(messages), MAX_HISTORY_MESSAGES + 2)
+        self.assertEqual(messages[1]["content"], "message 4")
 
     def test_starts_conversation_without_a_fake_user_message(self):
         ai = GuardianAI(self.project_dir, Path(self.model_file.name))

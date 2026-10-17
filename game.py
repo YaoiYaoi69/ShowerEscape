@@ -8,6 +8,7 @@ from math import gcd
 from pathlib import Path
 
 from guardian_ai import GuardianAI
+from voice_chat import VoiceChat, VoiceEvent
 
 
 BASE_TILE_SIZE = 32
@@ -196,6 +197,9 @@ class GameWindow:
         self.guardian_history: list[dict[str, str]] = []
         self.guardian_busy = False
         self.guardian_greeting_started = False
+        self.guardian_model_ready = False
+        self.voice_ready = False
+        self.voice_error: str | None = None
         self.guard_dialog: tk.Toplevel | None = None
         self.guard_was_nearby = False
         self.guardian_messages: tk.Text | None = None
@@ -209,6 +213,8 @@ class GameWindow:
         self.loading_dialog: tk.Toplevel | None = None
         self.loading_status: tk.Label | None = None
         self.loading_retry_button: tk.Button | None = None
+        self.voice_events: Queue[VoiceEvent] = Queue()
+        self.voice_chat: VoiceChat | None = None
         self.background_images = self.load_background_images()
         root.protocol("WM_DELETE_WINDOW", self.close_game)
 
@@ -276,6 +282,7 @@ class GameWindow:
         self.show_loading_dialog()
         root.after(200, self.start_guardian_warmup)
         root.after(100, self.poll_guardian_warmup)
+        root.after(100, self.poll_voice_queue)
 
     def show_loading_dialog(self) -> None:
         dialog = tk.Toplevel(self.root)
@@ -287,7 +294,10 @@ class GameWindow:
 
         self.loading_status = tk.Label(
             dialog,
-            text="Yumenkos KI wird geladen. Das Spiel startet danach automatisch ...",
+            text=(
+                "Yumenkos KI wird geladen. Danach werden die Sprachmodelle "
+                "vorbereitet ..."
+            ),
             font=("Segoe UI", 11),
             fg="#e2e8f0",
             bg="#1c2630",
@@ -465,6 +475,9 @@ class GameWindow:
 
     def close_game(self) -> None:
         self.close_guard_dialog()
+        if self.voice_chat is not None:
+            self.voice_chat.stop()
+            self.voice_chat = None
         self.guardian_ai.shutdown()
         self.root.destroy()
 
@@ -474,7 +487,10 @@ class GameWindow:
         self.guardian_warmup_started = True
         if self.loading_status is not None:
             self.loading_status.config(
-                text="Yumenkos KI wird geladen. Das Spiel startet danach automatisch ..."
+                text=(
+                    "Yumenkos KI wird geladen. Danach werden die Sprachmodelle "
+                    "vorbereitet ..."
+                )
             )
         if self.loading_retry_button is not None:
             self.loading_retry_button.pack_forget()
@@ -498,13 +514,18 @@ class GameWindow:
             return
 
         if succeeded:
-            self.message_label.config(
-                text="Yumenko ist bereit. Gehe zu ihr und chatte mit ihr."
-            )
-            if self.loading_dialog is not None and self.loading_dialog.winfo_exists():
-                self.loading_dialog.destroy()
-            self.loading_dialog = None
-            self.root.deiconify()
+            self.guardian_model_ready = True
+            if self.loading_status is not None:
+                self.loading_status.config(
+                    text="Yumenkos KI ist bereit. Sprachmodelle werden geladen ..."
+                )
+            if self.voice_chat is None:
+                self.voice_chat = VoiceChat(
+                    Path(__file__).resolve().parent,
+                    self.voice_events,
+                )
+                self.voice_chat.start()
+            self._show_game_when_models_ready()
         else:
             self.guardian_warmup_started = False
             if self.loading_status is not None:
@@ -514,6 +535,25 @@ class GameWindow:
             if self.loading_retry_button is not None:
                 self.loading_retry_button.pack(pady=(0, 12))
             self.root.after(100, self.poll_guardian_warmup)
+
+    def _show_game_when_models_ready(self) -> None:
+        if not self.guardian_model_ready or not (self.voice_ready or self.voice_error):
+            return
+        if self.voice_error:
+            self.message_label.config(
+                text=(
+                    "Yumenko ist bereit. Sprache nicht verfügbar; "
+                    "Texteingabe bleibt möglich."
+                )
+            )
+        else:
+            self.message_label.config(
+                text="Yumenko ist bereit. Gehe zu ihr und chatte mit ihr."
+            )
+        if self.loading_dialog is not None and self.loading_dialog.winfo_exists():
+            self.loading_dialog.destroy()
+        self.loading_dialog = None
+        self.root.deiconify()
 
     def open_guard_dialog(self) -> None:
         if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
@@ -532,6 +572,14 @@ class GameWindow:
         dialog.geometry(f"520x440+{x}+{y}")
         self.guard_dialog = dialog
 
+        if self.voice_chat is None:
+            self.voice_chat = VoiceChat(
+                Path(__file__).resolve().parent,
+                self.voice_events,
+            )
+            self.voice_error = None
+            self.voice_ready = False
+            self.voice_chat.start()
         self.guardian_messages = tk.Text(
             dialog,
             state="disabled",
@@ -544,9 +592,11 @@ class GameWindow:
         )
         self.guardian_status = tk.Label(
             dialog,
-            text="Yumenko denkt nach ...",
+            text="Yumenkos Sprachchat wird vorbereitet ...",
             fg="#94a3b8",
             bg="#1c2630",
+            justify="left",
+            wraplength=480,
         )
 
         input_row = tk.Frame(dialog, bg="#1c2630")
@@ -582,10 +632,23 @@ class GameWindow:
             self.guardian_status.config(text="Die lokale KI antwortet gerade ...")
             self.guardian_send_button.config(state="disabled")
         else:
-            self.guardian_status.config(text="Stelle Yumenko eine Frage.")
+            if self.voice_error is not None:
+                self.guardian_status.config(
+                    text=(
+                        f"Sprachchat nicht verfügbar: {self.voice_error}. "
+                        "Du kannst weiterhin schreiben."
+                    )
+                )
+            else:
+                self.guardian_status.config(text="Du kannst direkt mit Yumenko sprechen.")
+            if self.voice_chat is not None:
+                self.voice_chat.listen()
         self.poll_guardian_queue()
 
     def close_guard_dialog(self) -> None:
+        if self.voice_chat is not None:
+            self.voice_chat.pause()
+            self.voice_chat.cancel_speech()
         if self.guard_dialog is not None:
             self.guard_dialog.grab_release()
             self.guard_dialog.destroy()
@@ -619,6 +682,9 @@ class GameWindow:
 
     def request_guardian_reply(self, message: str | None) -> None:
         self.guardian_busy = True
+        if self.voice_chat is not None:
+            self.voice_chat.pause()
+            self.voice_chat.cancel_speech()
         if self.guardian_send_button is not None:
             self.guardian_send_button.config(state="disabled")
         if self.guardian_input is not None:
@@ -654,12 +720,16 @@ class GameWindow:
                 self.guardian_history.append({"role": "user", "content": message})
             self.guardian_history.append({"role": "assistant", "content": result})
             self.append_guardian_text("Yumenko", result)
-            if self.guardian_status is not None:
-                self.guardian_status.config(text="")
+            if self.voice_chat is not None:
+                self.voice_chat.speak(result)
+                if self.guardian_status is not None:
+                    self.guardian_status.config(text="Yumenko spricht ...")
         else:
             self.append_guardian_text("Fehler", result)
             if self.guardian_status is not None:
                 self.guardian_status.config(text="Die lokale KI konnte nicht antworten.")
+            if self.voice_chat is not None:
+                self.voice_chat.listen()
         self.guardian_busy = False
         if self.guardian_send_button is not None:
             self.guardian_send_button.config(state="normal")
@@ -667,6 +737,62 @@ class GameWindow:
             self.guardian_input.config(state="normal")
             self.guardian_input.focus_set()
         self.root.after(100, self.poll_guardian_queue)
+
+    def poll_voice_queue(self) -> None:
+        try:
+            event, message = self.voice_events.get_nowait()
+        except Empty:
+            if self.root.winfo_exists():
+                self.root.after(100, self.poll_voice_queue)
+            return
+
+        if event == "ready":
+            self.voice_ready = True
+            self.voice_error = None
+            self._show_game_when_models_ready()
+            if not self.guardian_busy and self.guardian_status is not None:
+                device_name = "GPU" if message == "cuda" else "CPU"
+                self.guardian_status.config(
+                    text=f"Der Sprachchat ist bereit ({device_name})."
+                )
+        elif event == "listening":
+            if (
+                self.guard_dialog is not None
+                and self.guard_dialog.winfo_exists()
+                and not self.guardian_busy
+                and self.guardian_status is not None
+            ):
+                self.guardian_status.config(text="Yumenko hört zu ...")
+        elif event == "transcript" and message:
+            if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
+                self.append_guardian_text("Du", message)
+                self.request_guardian_reply(message)
+        elif event == "spoken":
+            if self.voice_chat is not None and not self.guardian_busy:
+                self.voice_chat.listen()
+        elif event == "error":
+            self.voice_error = message or "Unbekannter Sprachfehler"
+            self.voice_ready = False
+            if message:
+                if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
+                    self.append_guardian_text("Sprachfehler", message)
+            if self.voice_chat is not None:
+                self.voice_chat.stop()
+                self.voice_chat = None
+            self._show_game_when_models_ready()
+            if (
+                self.guard_dialog is not None
+                and self.guard_dialog.winfo_exists()
+                and self.guardian_status is not None
+            ):
+                self.guardian_status.config(
+                    text=(
+                        f"Sprachchat nicht verfügbar: {self.voice_error}. "
+                        "Du kannst weiterhin schreiben."
+                    )
+                )
+        if self.root.winfo_exists():
+            self.root.after(100, self.poll_voice_queue)
 
 
 def main() -> None:

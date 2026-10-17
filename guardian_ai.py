@@ -10,6 +10,10 @@ from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 
+MAX_HISTORY_MESSAGES = 8
+MAX_RESPONSE_TOKENS = 72
+
+
 class GuardianAI:
     def __init__(self, project_dir: Path, model_path: Path) -> None:
         self.project_dir = project_dir
@@ -101,14 +105,19 @@ class GuardianAI:
                         "the numbers): relationship 35/100, trust 20/100, flirt level "
                         "55/100, playful mood. Current goal: playfully challenge the "
                         "player. Recent event: the player surprised you in a game. "
-                        "Use frequent teasing, moderate sarcasm, suggestive restraint, "
-                        "and short replies. Let the tone reflect this state without "
-                        "claiming that these values change dynamically. "
+                        "Use frequent teasing, moderate sarcasm, and suggestive restraint. "
+                        "Reply in one or two concise sentences, ideally under 30 words. "
+                        "Answer the latest message directly, then stop. Do not add "
+                        "stage directions, repeat the question, or append unrelated "
+                        "details. Let the tone reflect this state without claiming "
+                        "that these values change dynamically. "
                         "Always answer in English, even when the player writes in "
                         "another language. Answer the specific latest message, not a generic "
                         "conversation starter. Do not repeat previous answers, stock "
                         "greetings, or the same opening phrase; vary your wording "
                         "naturally. "
+                        "Do not use emojis, emoticons, smileys, or kaomoji; "
+                        "write plain text only. "
                         "For game questions, the inventory status in the latest player "
                         "message is authoritative, even if older chat says otherwise. "
                         "The brass key is found in the chest. The locked exit is east "
@@ -122,7 +131,7 @@ class GuardianAI:
                         )
                     ),
                 },
-                *history,
+                *history[-MAX_HISTORY_MESSAGES:],
             ]
             player_message = (
                 message
@@ -152,7 +161,7 @@ class GuardianAI:
                     "keep_alive": -1,
                     "options": {
                         "num_ctx": 2048,
-                        "num_predict": 120,
+                        "num_predict": MAX_RESPONSE_TOKENS,
                         "temperature": 0.6,
                         "top_p": 0.9,
                         "top_k": 20,
