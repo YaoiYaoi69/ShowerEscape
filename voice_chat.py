@@ -42,6 +42,10 @@ class TorchRuntime(Protocol):
     cuda: CudaRuntime
 
 
+class CTranslate2Runtime(Protocol):
+    def get_cuda_device_count(self) -> int: ...
+
+
 SAMPLE_RATE = 16_000
 FRAME_SIZE = 320
 FRAME_SECONDS = FRAME_SIZE / SAMPLE_RATE
@@ -67,6 +71,18 @@ def _select_tts_device(torch_module: TorchRuntime) -> str:
         return "cpu"
     free_bytes, _total_bytes = cuda.mem_get_info()
     return "cuda" if free_bytes >= MIN_CUDA_FREE_BYTES else "cpu"
+
+
+def _select_whisper_device(
+    torch_module: TorchRuntime,
+    ctranslate2_module: CTranslate2Runtime,
+) -> tuple[str, str]:
+    if (
+        torch_module.cuda.is_available()
+        and ctranslate2_module.get_cuda_device_count() > 0
+    ):
+        return "cuda", "int8_float32"
+    return "cpu", "int8"
 
 
 def pcm_rms(audio: bytes) -> float:
@@ -124,6 +140,7 @@ class VoiceChat:
             import numpy as np
             import sounddevice as sd
             import torch
+            import ctranslate2
             from faster_whisper import WhisperModel
             _prepare_kokoro_logging()
             from kokoro import KModel, KPipeline
@@ -144,15 +161,29 @@ class VoiceChat:
                     f"Die lokale Kokoro-Stimme fehlt: {kokoro_voice}"
                 )
 
+            whisper_device, whisper_compute_type = _select_whisper_device(
+                torch, ctranslate2
+            )
+            cuda_library_directory = None
+            if whisper_device == "cuda" and os.name == "nt":
+                cuda_library_directory = os.add_dll_directory(
+                    str(Path(torch.__file__).parent / "lib")
+                )
             recognizer = WhisperModel(
                 str(self.model_path),
-                device="cpu",
-                compute_type="int8",
+                device=whisper_device,
+                compute_type=whisper_compute_type,
                 cpu_threads=4,
                 num_workers=1,
                 local_files_only=True,
             )
             tts_device = _select_tts_device(torch)
+            if whisper_device == "cuda" and tts_device != "cuda":
+                raise RuntimeError(
+                    "Nicht genug freier GPU-Speicher, um Whisper und Kokoro "
+                    "gemeinsam auf der NVIDIA-GPU zu laden. Schließe andere "
+                    "GPU-Anwendungen und starte das Spiel erneut."
+                )
             tts_model = KModel(
                 repo_id="hexgrad/Kokoro-82M",
                 config=str(kokoro_config),

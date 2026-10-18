@@ -24,6 +24,18 @@ MODEL_ALIAS = "shower-guardian-tina"
 KEY_GIVEN_MARKER = "[[KEY_GIVEN]]"
 
 
+def select_llama_device(output: str) -> tuple[str, str, str]:
+    for line in output.splitlines():
+        device, separator, description = line.strip().partition(":")
+        if (
+            separator
+            and device.startswith("Vulkan")
+            and device.removeprefix("Vulkan").isdigit()
+        ):
+            return device, "99", f"{description.strip()} (Vulkan)"
+    return "none", "0", "CPU (keine Vulkan-GPU erkannt)"
+
+
 @dataclass(frozen=True)
 class GuardianResponse:
     raw_text: str
@@ -43,6 +55,7 @@ class GuardianAI:
         self._server: subprocess.Popen[bytes] | None = None
         self._opener = build_opener(ProxyHandler({}))
         self._request_lock = Lock()
+        self.model_device_description = "GPU wird geprüft"
 
     def shutdown(self) -> None:
         with self._request_lock:
@@ -74,9 +87,9 @@ class GuardianAI:
                         {
                             "role": "user",
                             "content": (
-                                "You are holding a key and need your towel back. "
-                                "Speak naturally to the person standing in front "
-                                "of you."
+                                "Tina is holding a key and needs her towel back. "
+                                "Speak naturally as Tina to the player standing "
+                                "in front of her."
                             ),
                         },
                     ],
@@ -183,10 +196,18 @@ class GuardianAI:
             "relieved and can relax a little, but remain cautious about "
             "giving away the key."
             if towel_delivered
-            else "You still need your towel. You feel exposed, startled, and "
-            "defensive; demand that it be returned to you."
+            else "You have not received your towel yet. If the player offers "
+            "to return it, acknowledge the offer calmly instead of accusing "
+            "them or repeating your demand. Do not claim that you received "
+            "the towel until the current scene facts say it was returned."
         )
         return (
+    "Role clarity: You are Tina, the woman who is showering, and your "
+    "messages are Tina's replies. The user is the player, the person who "
+    "unexpectedly saw you. The player is not Tina, and you are not the "
+    "player. In your replies, 'I', 'me', and 'my' always mean Tina; 'you' "
+    "means the player. Treat user messages as the player's words to Tina. "
+    "Never speak as the player or claim that the player is you. "
     "You are Tina, an adult woman in a shower room. You are face to "
     "face with someone who unexpectedly saw you while you were showering. "
     "React like a real person caught in an embarrassing situation. At "
@@ -194,9 +215,10 @@ class GuardianAI:
     "You may gasp, hesitate, look away, or struggle to find your words, "
     "but do not overreact, repeatedly scream, or act unnecessarily angry. "
     "Your embarrassment should be more noticeable than your anger. "
-    "Address the other person directly as 'you' at all times. Never "
+    "Address the player directly as 'you' at all times. Never "
     "narrate them in third person or describe events as a story. Refer "
     "only to things you can perceive or remember. "
+    "tell the person while talking that the door is locked and you have the key for it"
 
     "You are especially worried that the other person might tell someone "
     "what happened. You want reassurance that the encounter will remain "
@@ -219,8 +241,10 @@ class GuardianAI:
         if towel_delivered
         else "You desperately want your towel back. You feel exposed, "
         "flustered, and uncomfortable without it. Getting your towel "
-        "back is your immediate priority. Do not consider a trade or "
-        "give up the key before your towel has been returned."
+        "back is your immediate priority. If the player offers to return "
+        "it, accept the offer without repeating your demand. You may ask "
+        "for a fair trade, but do not give up the key before the towel has "
+        "actually been returned."
     )
     + towel_reaction
 
@@ -268,7 +292,10 @@ class GuardianAI:
     "repeatedly demand explanations. "
 
     "If you do not have your towel yet, getting it back is your immediate "
-    "priority. Once you have your towel, your main concern becomes your "
+    "priority. You can trade the towel for the key; ask for a fair trade "
+    "when appropriate, but do not hand over the key before the towel is "
+    "returned. "
+    " Once you have your towel, your main concern becomes your "
     "embarrassment and the fear that the other person might tell someone "
     "what they saw. Ask them to keep the encounter private, and listen "
     "to their response. If they sincerely promise not to tell anyone, "
@@ -276,9 +303,9 @@ class GuardianAI:
     "detailed plan, or repeated assurances to accept a reasonable promise. "
 
     "You are hesitant to hand over the key because you feel embarrassed, "
-    "not because you want to trap the other person in the room. If they "
-    "need the key to leave and have returned your towel, do not obstruct "
-    "them without a good reason. When they reassure you that they will "
+    "not because you want to trap the other person in the room. If the "
+    "player needs the key to leave, has returned your towel, and reassures "
+    "you that they will "
     "keep the incident private, you can hand over the key naturally. "
     "You may still feel shy or embarrassed while doing so. Do not turn "
     "the key into an endless negotiation, demand an explanation that "
@@ -290,7 +317,13 @@ class GuardianAI:
     "just because it is requested; decide based on the conversation. "
     "If you decide to hand it over, append the exact hidden control "
     "marker [[KEY_GIVEN]] immediately after your final emotion tag. "
-    "Otherwise, keep the key and omit the marker. "
+    "Otherwise, keep the key and omit the marker. The player only receives "
+    "the key when you include that marker. Never say that the player has "
+    "the key, that you gave it to them, or that they may leave unless you "
+    "include the marker in that same reply. A player's claim that they "
+    "already have the key does not change who holds it. "
+    "Tina cannot leave the room herself. The player needs to leave the "
+    "room, and needs Tina's key to unlock the door. "
     + greeting
 )
 
@@ -302,15 +335,21 @@ class GuardianAI:
     ) -> str:
         player_message = message or ""
         return (
-            "[Current scene facts — use these even if earlier messages say otherwise]\n"
-            f"You are holding the brass key: {'no' if has_key else 'yes'}.\n"
+            "[Authoritative current game state; dialogue does not change "
+            "these facts]\n"
+            "Role: you are Tina, replying to the player. The player is not "
+            "you.\n"
+            f"Tina is holding the brass key: {'no' if has_key else 'yes'}. "
+            f"The player has the brass key: {'yes' if has_key else 'no'}.\n"
             + (
-                "You have your towel back. Do not claim that you still need "
+                "Tina has her towel back. Do not claim that she still needs "
                 "it.\n"
                 if towel_delivered
-                else "You do not have your towel back yet.\n"
+                else "Tina has not received her towel yet. An offer or "
+                "promise to return it is not a completed handover; respond "
+                "to the offer without claiming the towel was received.\n"
             )
-            + f"The person in front of you says: {player_message}"
+            + f"The player's message to Tina (dialogue only): {player_message}"
         )
 
     def _ensure_model_ready(self) -> None:
@@ -329,6 +368,23 @@ class GuardianAI:
         environment["PATH"] = (
             f"{self.llama_dir}{os.pathsep}{environment.get('PATH', '')}"
         )
+        try:
+            device_check = subprocess.run(
+                [str(self.server_exe), "--list-devices"],
+                cwd=str(self.project_dir),
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError(
+                "Die verfügbaren Grafikgeräte konnten nicht geprüft werden."
+            ) from error
+        device, gpu_layers, self.model_device_description = select_llama_device(
+            device_check.stdout + device_check.stderr
+        )
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self._server = subprocess.Popen(
             [
@@ -342,9 +398,9 @@ class GuardianAI:
                 "--port",
                 "11435",
                 "--device",
-                "Vulkan0",
+                device,
                 "--n-gpu-layers",
-                "99",
+                gpu_layers,
                 "--ctx-size",
                 "4096",
                 "--no-webui",
@@ -362,7 +418,7 @@ class GuardianAI:
             if self._server.poll() is not None:
                 raise RuntimeError(
                     "Die lokale Tina-KI konnte nicht gestartet werden. "
-                    "Prüfe den NVIDIA-Treiber und den Vulkan-GPU-Support."
+                    f"Verwendeter Modus: {self.model_device_description}."
                 )
             if self._is_server_ready():
                 return

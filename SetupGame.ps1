@@ -12,6 +12,34 @@ $pythonExecutable = Join-Path $pythonDirectory "python.exe"
 $voiceDirectory = Join-Path $project ".runtime\voice"
 $speechModelDirectory = Join-Path $voiceDirectory "whisper-base"
 $kokoroDirectory = Join-Path $voiceDirectory "kokoro"
+$videoAdapters = @(Get-CimInstance -ClassName Win32_VideoController)
+$adapterDetails = @(
+    $videoAdapters | ForEach-Object {
+        "$($_.Name) $($_.AdapterCompatibility) $($_.PNPDeviceID)"
+    }
+)
+$hasNvidiaGpu = @(
+    $adapterDetails | Where-Object { $_ -match "NVIDIA|VEN_10DE" }
+).Count -gt 0
+$hasAmdGpu = @(
+    $adapterDetails | Where-Object {
+        $_ -match "AMD|Advanced Micro Devices|ATI|VEN_1002"
+    }
+).Count -gt 0
+
+Write-Host "Erkannte Grafikkarten:"
+if ($videoAdapters.Count -eq 0) {
+    Write-Host "  Keine Grafikkarte über Windows WMI erkannt."
+} else {
+    $videoAdapters | ForEach-Object { Write-Host "  $($_.Name)" }
+}
+if ($hasNvidiaGpu) {
+    Write-Host "NVIDIA erkannt: Kokoro kann CUDA nutzen; Tina verwendet Vulkan."
+} elseif ($hasAmdGpu) {
+    Write-Host "AMD erkannt: Tina verwendet Vulkan; Kokoro verwendet die CPU."
+} else {
+    Write-Host "Keine AMD- oder NVIDIA-GPU erkannt; Kokoro verwendet die CPU."
+}
 
 New-Item -ItemType Directory -Force (Join-Path $project ".runtime") | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $project "models") | Out-Null
@@ -80,22 +108,67 @@ if (-not (Test-Path $llamaServer) -or -not (Test-Path $llamaVulkanLibrary)) {
     throw "llama.cpp oder die Vulkan-GPU-Bibliothek fehlt: $llamaDirectory"
 }
 
+$llamaDevices = @(& $llamaServer --list-devices 2>&1)
+if ($LASTEXITCODE -ne 0) {
+    throw "llama.cpp konnte die verfügbaren Vulkan-Geräte nicht prüfen."
+}
+$llamaDevices | ForEach-Object { Write-Host $_ }
+if (($hasNvidiaGpu -or $hasAmdGpu) -and
+    -not ($llamaDevices | Where-Object { "$_" -match "Vulkan\d+:" })) {
+    throw (
+        "Eine AMD- oder NVIDIA-Grafikkarte wurde erkannt, aber llama.cpp " +
+        "findet kein Vulkan-GPU-Gerät. Installiere den aktuellen Grafiktreiber " +
+        "mit Vulkan-Unterstützung und führe SetupGame.cmd erneut aus."
+    )
+}
+
 Write-Host "Richte lokale Spracherkennung und Kokoro-Sprachwiedergabe ein..."
 New-Item -ItemType Directory -Force $voiceDirectory | Out-Null
-& $pythonExecutable -c "import importlib.util, sys; names = ['en_core_web_sm', 'faster_whisper', 'kokoro', 'numpy', 'sounddevice', 'torch']; sys.exit(1) if any(importlib.util.find_spec(name) is None for name in names) else None; import torch; sys.exit(0 if torch.__version__ == '2.6.0+cu124' and torch.cuda.is_available() and (torch.ones(1, device='cuda') + 1).item() == 2 else 1)"
+$torchCheck = if ($hasNvidiaGpu) {
+    "import sys, torch; sys.exit(0 if torch.__version__ == '2.6.0+cu124' and torch.cuda.is_available() and (torch.ones(1, device='cuda') + 1).item() == 2 else 1)"
+} else {
+    "import sys, torch; sys.exit(0 if torch.__version__ == '2.6.0+cpu' and not torch.cuda.is_available() and (torch.ones(1) + 1).item() == 2 else 1)"
+}
+& $pythonExecutable -c $torchCheck
 if ($LASTEXITCODE -ne 0) {
     & $pythonExecutable -m ensurepip --upgrade
     if ($LASTEXITCODE -ne 0) {
         throw "Pip konnte für die lokale Sprachfunktion nicht eingerichtet werden."
     }
-    & $pythonExecutable -m pip install --disable-pip-version-check -r (Join-Path $project "requirements-voice.txt")
+    if ($hasNvidiaGpu) {
+        & $pythonExecutable -m pip install --disable-pip-version-check `
+            "torch==2.6.0+cu124" `
+            --extra-index-url "https://download.pytorch.org/whl/cu124"
+    } else {
+        & $pythonExecutable -m pip install --disable-pip-version-check `
+            "torch==2.6.0+cpu" `
+            --index-url "https://download.pytorch.org/whl/cpu"
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Die passende PyTorch-Version für die erkannte Grafikkarte konnte nicht installiert werden."
+    }
+}
+& $pythonExecutable -c "import importlib.util, sys; names = ['en_core_web_sm', 'faster_whisper', 'kokoro', 'numpy', 'sounddevice']; sys.exit(1) if any(importlib.util.find_spec(name) is None for name in names) else 0"
+if ($LASTEXITCODE -ne 0) {
+    & $pythonExecutable -m pip install --disable-pip-version-check `
+        -r (Join-Path $project "requirements-voice.txt")
     if ($LASTEXITCODE -ne 0) {
         throw "Die lokalen Sprachpakete konnten nicht installiert werden."
     }
 }
-& $pythonExecutable -c "import sys, torch; sys.exit(0 if torch.__version__ == '2.6.0+cu124' and torch.cuda.is_available() and (torch.ones(1, device='cuda') + 1).item() == 2 else 1)"
+& $pythonExecutable -c $torchCheck
 if ($LASTEXITCODE -ne 0) {
-    throw "CUDA-PyTorch kann die NVIDIA-GPU nicht verwenden. Prüfe den NVIDIA-Treiber und die GPU-Kompatibilität."
+    if ($hasNvidiaGpu) {
+        throw "CUDA-PyTorch kann die NVIDIA-GPU nicht verwenden. Prüfe den NVIDIA-Treiber und die GPU-Kompatibilität."
+    }
+    throw "Die CPU-Version von PyTorch konnte nicht gestartet werden."
+}
+if ($hasNvidiaGpu) {
+    & $pythonExecutable -c "import os, pathlib, sys, torch, ctranslate2; os.add_dll_directory(str(pathlib.Path(torch.__file__).parent / 'lib')); sys.exit(0 if ctranslate2.get_cuda_device_count() > 0 else 1)"
+    if ($LASTEXITCODE -ne 0) {
+        throw "CTranslate2 kann die NVIDIA-GPU für die Whisper-Spracherkennung nicht verwenden."
+    }
+    Write-Host "Whisper und Kokoro können CUDA auf der NVIDIA-GPU verwenden."
 }
 
 $speechModelRevision = "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66"

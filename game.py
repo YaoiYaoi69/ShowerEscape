@@ -6,6 +6,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from math import gcd, sqrt
 from pathlib import Path
+from random import Random
 
 from emotion_tags import parse_emotion_tags
 from guardian_ai import GuardianAI, GuardianResponse
@@ -32,7 +33,16 @@ MOVEMENT_KEYS = {
     "right": "d",
 }
 TILE_IMAGE_DIR = Path(__file__).resolve().parent / "assets" / "tiles"
+CHARACTER_IMAGE_DIR = Path(__file__).resolve().parent / "assets" / "characters"
 EMOTION_IMAGE_DIR = Path(__file__).resolve().parent / "assets" / "emotions"
+SCREEN_IMAGE_DIR = Path(__file__).resolve().parent / "assets" / "screens"
+CHARACTER_IMAGE_FILES = {
+    "player": "player.png",
+    "tina": "tina.png",
+    "towel": "towel.png",
+}
+LOADING_IMAGE_FILE = "loading.png"
+VICTORY_IMAGE_FILE = "viktory.png"
 EMOTION_IMAGE_FILES = {
     "angry": "angry.png",
     "embarrassed": "embarassed.png",
@@ -41,13 +51,6 @@ EMOTION_IMAGE_FILES = {
     "surprised": "suprised.png",
 }
 EMOTION_IMAGE_MAX_SIZE = 520
-
-# Use (column, row): "filename.png" entries to assign individual backgrounds.
-BACKGROUND_TILES: dict[tuple[int, int], str] = {
-    (column, row): "stone.png"
-    for row in range(GRID_ROWS)
-    for column in range(GRID_COLUMNS)
-}
 
 # Each row must contain GRID_COLUMNS characters: . is walkable, # is blocked.
 COLLISION_MAP = (
@@ -67,6 +70,31 @@ COLLISION_MAP = (
     "#........................#",
     "##########################",
 )
+
+_FLOOR_TILE_POSITIONS = tuple(
+    (column, row)
+    for row in range(GRID_ROWS)
+    for column in range(GRID_COLUMNS)
+    if COLLISION_MAP[row][column] == "."
+)
+_INITIAL_TILEW_POSITIONS = tuple(
+    Random(0).sample(_FLOOR_TILE_POSITIONS, round(len(_FLOOR_TILE_POSITIONS) * 0.3))
+)
+_TILEW_POSITIONS = set(
+    Random(1).sample(
+        _INITIAL_TILEW_POSITIONS,
+        round(len(_INITIAL_TILEW_POSITIONS) * 0.2),
+    )
+)
+
+# Replace 80% of the original tilew positions with tile.
+BACKGROUND_TILES: dict[tuple[int, int], str] = {
+    (column, row): (
+        "tilew.png" if (column, row) in _TILEW_POSITIONS else "tile.png"
+    )
+    for row in range(GRID_ROWS)
+    for column in range(GRID_COLUMNS)
+}
 
 
 def scale_coordinate(value: int) -> int:
@@ -286,9 +314,15 @@ class GameWindow:
         self.loading_dialog: tk.Toplevel | None = None
         self.loading_status: tk.Label | None = None
         self.loading_retry_button: tk.Button | None = None
+        self.loading_image: tk.PhotoImage | None = None
+        self.victory_dialog: tk.Toplevel | None = None
+        self.victory_image: tk.PhotoImage | None = None
         self.voice_events: Queue[VoiceEvent] = Queue()
         self.voice_chat: VoiceChat | None = None
+        self.character_images = self.load_character_images()
         self.background_images = self.load_background_images()
+        self.loading_image = self.load_screen_image(LOADING_IMAGE_FILE)
+        self.victory_image = self.load_screen_image(VICTORY_IMAGE_FILE)
         root.protocol("WM_DELETE_WINDOW", self.close_game)
 
         title = tk.Label(
@@ -365,27 +399,35 @@ class GameWindow:
     def show_loading_dialog(self) -> None:
         dialog = tk.Toplevel(self.root)
         dialog.title("ShowerEscape")
-        dialog.geometry("420x150")
-        dialog.resizable(False, False)
         dialog.configure(bg="#1c2630")
         dialog.protocol("WM_DELETE_WINDOW", self.close_game)
+        try:
+            dialog.attributes("-fullscreen", True)
+        except tk.TclError:
+            dialog.geometry(
+                f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()}"
+            )
 
-        self.loading_status = tk.Label(
+        image_label = tk.Label(
             dialog,
-            text=(
-                "Tinas KI wird geladen. Danach werden die Sprachmodelle "
-                "vorbereitet ..."
-            ),
-            font=("Segoe UI", 11),
+            image=self.loading_image,
+            bg="#1c2630",
+        )
+        image_label.pack(fill="both", expand=True)
+
+        footer = tk.Frame(dialog, bg="#1c2630")
+        footer.pack(fill="x", side="bottom")
+        self.loading_status = tk.Label(
+            footer,
+            text="Einen Moment bitte – das Spiel wird vorbereitet ...",
+            font=("Segoe UI", 13, "bold"),
             fg="#e2e8f0",
             bg="#1c2630",
-            wraplength=380,
-            pady=24,
+            pady=16,
         )
         self.loading_status.pack(fill="x")
-
         self.loading_retry_button = tk.Button(
-            dialog,
+            footer,
             text="Erneut versuchen",
             command=self.start_guardian_warmup,
             font=("Segoe UI", 10, "bold"),
@@ -394,11 +436,22 @@ class GameWindow:
             activebackground="#7c3aed",
             activeforeground="#ffffff",
         )
-        dialog.update_idletasks()
-        x = max(0, (dialog.winfo_screenwidth() - 420) // 2)
-        y = max(0, (dialog.winfo_screenheight() - 150) // 2)
-        dialog.geometry(f"420x150+{x}+{y}")
+        self.loading_retry_button.pack_forget()
         self.loading_dialog = dialog
+
+    def load_screen_image(self, filename: str) -> tk.PhotoImage:
+        image_path = SCREEN_IMAGE_DIR / filename
+        if not image_path.is_file():
+            raise FileNotFoundError(f"Bildschirmgrafik nicht gefunden: {image_path}")
+        image = tk.PhotoImage(file=str(image_path))
+        max_width = self.root.winfo_screenwidth()
+        max_height = max(1, self.root.winfo_screenheight() - 120)
+        scale = max(
+            1,
+            (image.width() + max_width - 1) // max_width,
+            (image.height() + max_height - 1) // max_height,
+        )
+        return image.subsample(scale, scale)
 
     def load_background_images(self) -> dict[str, tk.PhotoImage]:
         images: dict[str, tk.PhotoImage] = {}
@@ -418,6 +471,21 @@ class GameWindow:
                 TILE_SIZE // divisor, TILE_SIZE // divisor
             )
             images[filename] = image
+        return images
+
+    def load_character_images(self) -> dict[str, tk.PhotoImage]:
+        target_size = TILE_SIZE * 2
+        images: dict[str, tk.PhotoImage] = {}
+        for character, filename in CHARACTER_IMAGE_FILES.items():
+            image_path = CHARACTER_IMAGE_DIR / filename
+            if not image_path.is_file():
+                raise FileNotFoundError(f"Figurenbild nicht gefunden: {image_path}")
+            image = tk.PhotoImage(file=str(image_path))
+            scale = max(
+                1,
+                (image.width() + target_size // 2) // target_size,
+            )
+            images[character] = image.subsample(scale, scale)
         return images
 
     def draw(self) -> None:
@@ -454,23 +522,12 @@ class GameWindow:
             x1, y1 = place_x + place_half_size, place_y + place_half_size
             outline_width = round(2 * SCALE_FACTOR)
             if place.kind == "towel":
-                self.canvas.create_rectangle(
-                    x0,
-                    y0,
-                    x1,
-                    y1,
-                    fill="#f8fafc" if not place.used else "#64748b",
-                    outline="#38bdf8",
-                    width=outline_width,
-                )
-                self.canvas.create_line(
-                    x0 + scale_coordinate(6),
-                    place_y,
-                    x1 - scale_coordinate(6),
-                    place_y,
-                    fill="#38bdf8",
-                    width=outline_width,
-                )
+                if not place.used:
+                    self.canvas.create_image(
+                        place_x,
+                        place_y,
+                        image=self.character_images["towel"],
+                    )
             elif place.kind == "exit":
                 self.canvas.create_rectangle(
                     x0,
@@ -482,19 +539,16 @@ class GameWindow:
                     width=outline_width,
                 )
             else:
-                self.canvas.create_rectangle(
-                    x0, y0, x1, y1, fill="#7c3aed", outline="#ddd6fe", width=outline_width
+                self.canvas.create_image(
+                    place_x,
+                    place_y,
+                    image=self.character_images["tina"],
                 )
 
-        half_size = PLAYER_SIZE / 2
-        self.canvas.create_rectangle(
-            self.player.x - half_size,
-            self.player.y - half_size,
-            self.player.x + half_size,
-            self.player.y + half_size,
-            fill="#38bdf8",
-            outline="#e0f2fe",
-            width=round(2 * SCALE_FACTOR),
+        self.canvas.create_image(
+            self.player.x,
+            self.player.y,
+            image=self.character_images["player"],
         )
 
         self.key_label.config(
@@ -511,12 +565,12 @@ class GameWindow:
                 return
             self.close_game()
             return
+        if self.won:
+            return
         if event.keysym.lower() == "t":
             self.open_guard_dialog()
             return
         if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
-            return
-        if self.won:
             return
 
         key = event.keysym.lower()
@@ -552,6 +606,7 @@ class GameWindow:
             self.draw()
             if self.won:
                 self.message_label.config(fg="#86efac")
+                self.show_victory_screen()
 
     def on_key_release(self, event: tk.Event) -> None:
         self.held_movement_keys.discard(event.keysym.lower())
@@ -559,6 +614,40 @@ class GameWindow:
     def clear_held_movement_keys(self, event: tk.Event) -> None:
         if event.type == tk.EventType.FocusOut:
             self.held_movement_keys.clear()
+
+    def show_victory_screen(self) -> None:
+        if self.victory_dialog is not None and self.victory_dialog.winfo_exists():
+            self.victory_dialog.lift()
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Geschafft!")
+        dialog.configure(bg="#1c2630")
+        dialog.protocol("WM_DELETE_WINDOW", self.close_game)
+        try:
+            dialog.attributes("-fullscreen", True)
+        except tk.TclError:
+            dialog.geometry(
+                f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()}"
+            )
+
+        image_label = tk.Label(
+            dialog,
+            image=self.victory_image,
+            bg="#1c2630",
+        )
+        image_label.pack(fill="both", expand=True)
+        tk.Label(
+            dialog,
+            text="Geschafft!  Drücke Esc zum Beenden.",
+            font=("Segoe UI", 16, "bold"),
+            fg="#f1f5f9",
+            bg="#1c2630",
+            pady=18,
+        ).pack(fill="x", side="bottom")
+        self.victory_dialog = dialog
+        dialog.grab_set()
+        dialog.lift()
 
     def close_game(self) -> None:
         self.close_guard_dialog()
@@ -574,10 +663,7 @@ class GameWindow:
         self.guardian_warmup_started = True
         if self.loading_status is not None:
             self.loading_status.config(
-                text=(
-                    "Tinas KI wird geladen. Danach werden die Sprachmodelle "
-                    "vorbereitet ..."
-                )
+                text="Einen Moment bitte – fast geschafft ..."
             )
         if self.loading_retry_button is not None:
             self.loading_retry_button.pack_forget()
@@ -604,7 +690,7 @@ class GameWindow:
             self.guardian_model_ready = True
             if self.loading_status is not None:
                 self.loading_status.config(
-                    text="Tinas KI ist bereit. Sprachmodelle werden geladen ..."
+                    text="Das Spiel wird fertig vorbereitet ..."
                 )
             if self.voice_chat is None:
                 self.voice_chat = VoiceChat(
@@ -617,7 +703,10 @@ class GameWindow:
             self.guardian_warmup_started = False
             if self.loading_status is not None:
                 self.loading_status.config(
-                    text=f"Tinas KI konnte nicht geladen werden:\n{error}"
+                    text=(
+                        "Das Spiel konnte nicht gestartet werden. "
+                        "Bitte versuche es erneut."
+                    )
                 )
             if self.loading_retry_button is not None:
                 self.loading_retry_button.pack(pady=(0, 12))
@@ -626,16 +715,28 @@ class GameWindow:
     def _show_game_when_models_ready(self) -> None:
         if not self.guardian_model_ready or not (self.voice_ready or self.voice_error):
             return
+        device_message = (
+            "Tina läuft auf der CPU und kann langsamer antworten. Für "
+            "GPU-Beschleunigung installiere den aktuellen Grafikkartentreiber."
+            if self.guardian_ai.model_device_description.startswith("CPU")
+            else (
+                "Tina verwendet "
+                f"{self.guardian_ai.model_device_description}."
+            )
+        )
         if self.voice_error:
             self.message_label.config(
                 text=(
-                    "Tina ist bereit. Sprache nicht verfügbar; "
-                    "Texteingabe bleibt möglich."
+                    "Du kannst ohne Spracheingabe mit Tina schreiben. "
+                    f"{device_message}"
                 )
             )
         else:
             self.message_label.config(
-                text="Tina ist bereit. Gehe zu ihr und chatte mit ihr."
+                text=(
+                    "Tina ist bereit. Gehe zu ihr und chatte mit ihr. "
+                    f"{device_message}"
+                )
             )
         if self.loading_dialog is not None and self.loading_dialog.winfo_exists():
             self.loading_dialog.destroy()
@@ -788,7 +889,7 @@ class GameWindow:
         self.guardian_emotion_label.pack(fill="both", expand=True)
         self.guardian_status = tk.Label(
             dialog,
-            text="Tinas Sprachchat wird vorbereitet ...",
+            text="Tina macht sich bereit ...",
             font=("Segoe UI", 9),
             fg="#a5b4c7",
             bg="#1c2630",
@@ -850,18 +951,18 @@ class GameWindow:
             self.guardian_greeting_started = True
             self.request_guardian_reply(None)
         elif self.guardian_busy:
-            self.guardian_status.config(text="Die lokale KI antwortet gerade ...")
+            self.guardian_status.config(text="Tina überlegt gerade ...")
             self.guardian_send_button.config(state="disabled")
         else:
             if self.voice_error is not None:
                 self.guardian_status.config(
                     text=(
-                        f"Sprachchat nicht verfügbar: {self.voice_error}. "
+                        "Die Spracheingabe ist gerade nicht verfügbar. "
                         "Du kannst weiterhin schreiben."
                     )
                 )
             else:
-                self.guardian_status.config(text="Du kannst direkt mit Tina sprechen.")
+                self.guardian_status.config(text="Du kannst jetzt mit Tina sprechen.")
             if self.voice_chat is not None:
                 self.voice_chat.listen()
         self.poll_guardian_queue()
@@ -938,7 +1039,7 @@ class GameWindow:
             self.guardian_input.config(state="disabled")
         if self.guardian_status is not None:
             self.guardian_status.config(
-                text="Die lokale KI antwortet ... Bitte kurz warten."
+                text="Tina antwortet gleich ..."
             )
         history = list(self.guardian_history)
         has_key = self.player.has_key
@@ -991,9 +1092,12 @@ class GameWindow:
         else:
             if not isinstance(result, str):
                 raise TypeError("Die lokale KI hat eine ungültige Fehlermeldung geliefert.")
-            self.append_guardian_text("Fehler", result)
+            self.append_guardian_text(
+                "Hinweis",
+                "Tina kann gerade nicht antworten. Bitte versuche es erneut.",
+            )
             if self.guardian_status is not None:
-                self.guardian_status.config(text="Die lokale KI konnte nicht antworten.")
+                self.guardian_status.config(text="Tina kann gerade nicht antworten.")
             if self.voice_chat is not None:
                 self.voice_chat.listen()
         self.guardian_busy = False
@@ -1017,9 +1121,8 @@ class GameWindow:
             self.voice_error = None
             self._show_game_when_models_ready()
             if not self.guardian_busy and self.guardian_status is not None:
-                device_name = "GPU" if message == "cuda" else "CPU"
                 self.guardian_status.config(
-                    text=f"Der Sprachchat ist bereit ({device_name})."
+                    text="Du kannst jetzt mit Tina sprechen."
                 )
         elif event == "listening":
             if (
@@ -1028,7 +1131,7 @@ class GameWindow:
                 and not self.guardian_busy
                 and self.guardian_status is not None
             ):
-                self.guardian_status.config(text="Tina hört zu ...")
+                self.guardian_status.config(text="Du kannst jetzt sprechen.")
         elif event == "transcript" and message:
             if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
                 self.append_guardian_text("Du", message)
@@ -1041,7 +1144,11 @@ class GameWindow:
             self.voice_ready = False
             if message:
                 if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
-                    self.append_guardian_text("Sprachfehler", message)
+                    self.append_guardian_text(
+                        "Hinweis",
+                        "Die Spracheingabe ist gerade nicht verfügbar. "
+                        "Du kannst weiterhin schreiben.",
+                    )
             if self.voice_chat is not None:
                 self.voice_chat.stop()
                 self.voice_chat = None
@@ -1053,7 +1160,7 @@ class GameWindow:
             ):
                 self.guardian_status.config(
                     text=(
-                        f"Sprachchat nicht verfügbar: {self.voice_error}. "
+                        "Die Spracheingabe ist gerade nicht verfügbar. "
                         "Du kannst weiterhin schreiben."
                     )
                 )
