@@ -42,20 +42,20 @@ BACKGROUND_TILES: dict[tuple[int, int], str] = {
 # Each row must contain GRID_COLUMNS characters: . is walkable, # is blocked.
 COLLISION_MAP = (
     "##########################",
-    "..........................",
-    "..........................",
-    "..........................",
-    ".........#################",
-    "..........................",
-    "..........................",
-    "..........................",
-    "..........................",
-    "..........................",
-    "....................####..",
-    "....................####..",
-    "..........................",
-    "..........................",
-    "..........................",
+    "#.....................#...",
+    "#.....................#...",
+    "#.....................#...",
+    "#........#################",
+    "#........................#",
+    "#........................#",
+    "#........................#",
+    "#........................#",
+    "#........................#",
+    "#...................####.#",
+    "#...................####.#",
+    "#........................#",
+    "#........................#",
+    "##########################",
 )
 
 
@@ -98,12 +98,12 @@ class Place:
 
 
 PLACES = [
-    Place("Handtuch", 216, 120, "Ein sauberes Handtuch. Yumenko braucht es.", "towel"),
+    Place("Handtuch", 216, 120, "Ein sauberes Handtuch. Tina braucht es.", "towel"),
     Place(
-        "Yumenko",
+        "Tina",
         600,
         312,
-        "Yumenko haelt den Schluessel und moechte zuerst ihr Handtuch haben.",
+        "Tina haelt den Schluessel und moechte zuerst ihr Handtuch haben.",
         "guard",
     ),
     Place("Ausgang", 696, 72, "Der Ausgang ist verschlossen.", "exit"),
@@ -186,28 +186,28 @@ def interact(player: Player) -> tuple[str, bool]:
             return "Du hast das Handtuch bereits.", False
         player.has_towel = True
         place.used = True
-        return "Du hast Yumenkos Handtuch genommen. Bring es zu ihr.", False
+        return "Du hast Tinas Handtuch genommen. Bring es zu ihr.", False
     if place.kind == "guard":
         if not player.towel_delivered:
             if not player.has_towel:
                 return (
-                    "Yumenko sagt: Bring mir erst mein Handtuch, dann reden wir "
+                    "Tina sagt: Bring mir erst mein Handtuch, dann reden wir "
                     "ueber den Schluessel.",
                     False,
                 )
             player.has_towel = False
             player.towel_delivered = True
             return (
-                "Du gibst Yumenko ihr Handtuch. Jetzt musst du sie ueberzeugen, "
+                "Du gibst Tina ihr Handtuch. Jetzt musst du sie ueberzeugen, "
                 "dir den Schluessel zu geben.",
                 False,
             )
-        return "Yumenko wartet darauf, dass du sie im Chat ueberzeugst.", False
+        return "Tina wartet darauf, dass du sie im Chat ueberzeugst.", False
     if place.kind == "exit":
         if player.has_key:
             return "Mit dem Schluessel oeffnest du den Ausgang. Geschafft!", True
         return (
-            "Der Ausgang ist verschlossen. Ueberzeuge Yumenko, dir ihren "
+            "Der Ausgang ist verschlossen. Ueberzeuge Tina, dir ihren "
             "Schluessel zu geben.",
             False,
         )
@@ -246,7 +246,7 @@ class GameWindow:
             Path(__file__).resolve().parent,
             Path(__file__).resolve().parent
             / "models"
-            / "Yumenko-Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+            / "Tina-Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
         )
         self.guardian_history: list[dict[str, str]] = []
         self.guardian_emotions: tuple[str, ...] = ()
@@ -306,7 +306,7 @@ class GameWindow:
         self.message_label = tk.Label(
             root,
             text=(
-                "Finde Yumenkos Handtuch, bring es ihr und ueberzeuge sie, "
+                "Finde Tinas Handtuch, bring es ihr und ueberzeuge sie, "
                 "dir den Schluessel zu geben."
             ),
             font=("Segoe UI", 10),
@@ -319,7 +319,7 @@ class GameWindow:
 
         self.guardian_chat_button = tk.Button(
             root,
-            text="Mit Yumenko chatten",
+            text="Mit Tina chatten",
             command=self.open_guard_dialog,
             font=("Segoe UI", 11, "bold"),
             fg="#f1f5f9",
@@ -333,7 +333,7 @@ class GameWindow:
 
         controls = tk.Label(
             root,
-            text="WASD bewegen    E interagieren    T Yumenko-Chat    Esc beenden",
+            text="WASD bewegen    E interagieren    T Tina-Chat    Esc beenden",
             font=("Segoe UI", 10),
             fg="#94a3b8",
             bg="#1c2630",
@@ -359,7 +359,7 @@ class GameWindow:
         self.loading_status = tk.Label(
             dialog,
             text=(
-                "Yumenkos KI wird geladen. Danach werden die Sprachmodelle "
+                "Tinas KI wird geladen. Danach werden die Sprachmodelle "
                 "vorbereitet ..."
             ),
             font=("Segoe UI", 11),
@@ -559,7 +559,7 @@ class GameWindow:
         if self.loading_status is not None:
             self.loading_status.config(
                 text=(
-                    "Yumenkos KI wird geladen. Danach werden die Sprachmodelle "
+                    "Tinas KI wird geladen. Danach werden die Sprachmodelle "
                     "vorbereitet ..."
                 )
             )
@@ -588,7 +588,7 @@ class GameWindow:
             self.guardian_model_ready = True
             if self.loading_status is not None:
                 self.loading_status.config(
-                    text="Yumenkos KI ist bereit. Sprachmodelle werden geladen ..."
+                    text="Tinas KI ist bereit. Sprachmodelle werden geladen ..."
                 )
             if self.voice_chat is None:
                 self.voice_chat = VoiceChat(
@@ -601,7 +601,7 @@ class GameWindow:
             self.guardian_warmup_started = False
             if self.loading_status is not None:
                 self.loading_status.config(
-                    text=f"Yumenkos KI konnte nicht geladen werden:\n{error}"
+                    text=f"Tinas KI konnte nicht geladen werden:\n{error}"
                 )
             if self.loading_retry_button is not None:
                 self.loading_retry_button.pack(pady=(0, 12))
@@ -613,13 +613,13 @@ class GameWindow:
         if self.voice_error:
             self.message_label.config(
                 text=(
-                    "Yumenko ist bereit. Sprache nicht verfügbar; "
+                    "Tina ist bereit. Sprache nicht verfügbar; "
                     "Texteingabe bleibt möglich."
                 )
             )
         else:
             self.message_label.config(
-                text="Yumenko ist bereit. Gehe zu ihr und chatte mit ihr."
+                text="Tina ist bereit. Gehe zu ihr und chatte mit ihr."
             )
         if self.loading_dialog is not None and self.loading_dialog.winfo_exists():
             self.loading_dialog.destroy()
@@ -632,7 +632,7 @@ class GameWindow:
             return
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("Yumenko")
+        dialog.title("Tina")
         dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.configure(bg="#1c2630")
@@ -669,7 +669,7 @@ class GameWindow:
         header.pack(side="top", fill="x", padx=18, pady=(14, 8))
         tk.Label(
             header,
-            text="YUMENKO",
+            text="TINA",
             font=("Segoe UI", 16, "bold"),
             fg="#f1f5f9",
             bg="#1c2630",
@@ -772,7 +772,7 @@ class GameWindow:
         self.guardian_emotion_label.pack(fill="both", expand=True)
         self.guardian_status = tk.Label(
             dialog,
-            text="Yumenkos Sprachchat wird vorbereitet ...",
+            text="Tinas Sprachchat wird vorbereitet ...",
             font=("Segoe UI", 9),
             fg="#a5b4c7",
             bg="#1c2630",
@@ -825,7 +825,7 @@ class GameWindow:
         dialog.after_idle(self.guardian_input.focus_force)
 
         for entry in self.guardian_history:
-            speaker = "Du" if entry["role"] == "user" else "Yumenko"
+            speaker = "Du" if entry["role"] == "user" else "Tina"
             text = entry["content"]
             if entry["role"] == "assistant":
                 text, _ = parse_emotion_tags(text)
@@ -845,7 +845,7 @@ class GameWindow:
                     )
                 )
             else:
-                self.guardian_status.config(text="Du kannst direkt mit Yumenko sprechen.")
+                self.guardian_status.config(text="Du kannst direkt mit Tina sprechen.")
             if self.voice_chat is not None:
                 self.voice_chat.listen()
         self.poll_guardian_queue()
@@ -961,17 +961,17 @@ class GameWindow:
             if result.emotions:
                 self.guardian_emotion = result.emotions[-1]
                 self.update_guardian_emotion(self.guardian_emotion)
-            self.append_guardian_text("Yumenko", result.text)
+            self.append_guardian_text("Tina", result.text)
             if result.key_given:
                 self.player.has_key = True
                 self.message_label.config(
-                    text="Yumenko gibt dir den Schluessel. Geh zum Ausgang im Osten."
+                    text="Tina gibt dir den Schluessel. Geh zum Ausgang im Osten."
                 )
                 self.draw()
             if self.voice_chat is not None:
                 self.voice_chat.speak(result.text)
                 if self.guardian_status is not None:
-                    self.guardian_status.config(text="Yumenko spricht ...")
+                    self.guardian_status.config(text="Tina spricht ...")
         else:
             self.append_guardian_text("Fehler", result)
             if self.guardian_status is not None:
@@ -1010,7 +1010,7 @@ class GameWindow:
                 and not self.guardian_busy
                 and self.guardian_status is not None
             ):
-                self.guardian_status.config(text="Yumenko hört zu ...")
+                self.guardian_status.config(text="Tina hört zu ...")
         elif event == "transcript" and message:
             if self.guard_dialog is not None and self.guard_dialog.winfo_exists():
                 self.append_guardian_text("Du", message)

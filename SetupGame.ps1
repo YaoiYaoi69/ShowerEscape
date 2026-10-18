@@ -6,7 +6,7 @@ $llamaDirectory = Join-Path $project "tools\llama.cpp"
 $llamaServer = Join-Path $llamaDirectory "llama-server.exe"
 $llamaVulkanLibrary = Join-Path $llamaDirectory "ggml-vulkan.dll"
 $llamaArchive = Join-Path $project ".runtime\llama-b11718-bin-win-vulkan-x64.zip"
-$modelPath = Join-Path $project "models\Yumenko-Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+$modelPath = Join-Path $project "models\Tina-Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 $pythonInstaller = Join-Path $project ".runtime\python-3.12.10-amd64.exe"
 $pythonExecutable = Join-Path $pythonDirectory "python.exe"
 $voiceDirectory = Join-Path $project ".runtime\voice"
@@ -18,14 +18,14 @@ New-Item -ItemType Directory -Force (Join-Path $project "models") | Out-Null
 
 if (-not (Test-Path $modelPath)) {
     throw (
-        "Das trainierte Yumenko-Modell fehlt: $modelPath`n" +
-        "Kopiere Yumenko-Qwen3-4B-Instruct-2507-Q4_K_M.gguf in diesen Ordner."
+        "Das trainierte Tina-Modell fehlt: $modelPath`n" +
+        "Kopiere Tina-Qwen3-4B-Instruct-2507-Q4_K_M.gguf in diesen Ordner."
     )
 }
 $expectedModelHash = "80647F2EE030B7336036ACF21C19D0E5139F9AD36A71BD5E6E7E50EDDFA648A6"
 $actualModelHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $modelPath).Hash
 if ($actualModelHash -ne $expectedModelHash) {
-    throw "Die SHA-256-Prüfung des trainierten Yumenko-Modells ist fehlgeschlagen."
+    throw "Die SHA-256-Prüfung des trainierten Tina-Modells ist fehlgeschlagen."
 }
 
 if (-not (Test-Path $pythonDirectory)) {
