@@ -4,7 +4,7 @@ from queue import Empty, Queue
 from threading import Thread
 import tkinter as tk
 from dataclasses import dataclass
-from math import gcd
+from math import gcd, sqrt
 from pathlib import Path
 
 from emotion_tags import parse_emotion_tags
@@ -21,14 +21,24 @@ WORLD_WIDTH = GRID_COLUMNS * TILE_SIZE
 WORLD_HEIGHT = GRID_ROWS * TILE_SIZE
 PLAYER_SIZE = round(28 * SCALE_FACTOR)
 MOVE_DISTANCE = round(12 * SCALE_FACTOR)
+MOVEMENT_KEYS = {
+    "w": "w",
+    "a": "a",
+    "s": "s",
+    "d": "d",
+    "up": "w",
+    "left": "a",
+    "down": "s",
+    "right": "d",
+}
 TILE_IMAGE_DIR = Path(__file__).resolve().parent / "assets" / "tiles"
 EMOTION_IMAGE_DIR = Path(__file__).resolve().parent / "assets" / "emotions"
 EMOTION_IMAGE_FILES = {
     "angry": "angry.png",
-    "embarrassed": "embarrased.png",
+    "embarrassed": "embarassed.png",
     "happy": "happy.png",
     "scared": "scared.png",
-    "surprised": "surprised.png",
+    "surprised": "suprised.png",
 }
 EMOTION_IMAGE_MAX_SIZE = 520
 
@@ -127,15 +137,16 @@ def validate_grid() -> None:
             raise ValueError(f"Hintergrund-Kachel ausserhalb des Rasters: {(column, row)}")
 
 
-def move(player: Player, direction: str) -> None:
-    offsets = {
-        "w": (0, -MOVE_DISTANCE),
-        "a": (-MOVE_DISTANCE, 0),
-        "s": (0, MOVE_DISTANCE),
-        "d": (MOVE_DISTANCE, 0),
-    }
-    dx, dy = offsets[direction]
-    half_size = PLAYER_SIZE / 2
+def move(player: Player, directions: set[str]) -> None:
+    horizontal = int("d" in directions) - int("a" in directions)
+    vertical = int("s" in directions) - int("w" in directions)
+    if horizontal == 0 and vertical == 0:
+        return
+
+    distance = MOVE_DISTANCE / sqrt(horizontal**2 + vertical**2)
+    dx = round(horizontal * distance)
+    dy = round(vertical * distance)
+    half_size = PLAYER_SIZE // 2
     next_x = max(half_size, min(WORLD_WIDTH - half_size, player.x + dx))
     next_y = max(half_size, min(WORLD_HEIGHT - half_size, player.y + dy))
     if not is_position_blocked(next_x, next_y):
@@ -251,6 +262,7 @@ class GameWindow:
         self.guardian_history: list[dict[str, str]] = []
         self.guardian_emotions: tuple[str, ...] = ()
         self.guardian_emotion: str | None = None
+        self.held_movement_keys: set[str] = set()
         self.guardian_busy = False
         self.guardian_greeting_started = False
         self.guardian_model_ready = False
@@ -342,6 +354,8 @@ class GameWindow:
         controls.pack()
 
         root.bind_all("<KeyPress>", self.on_key)
+        root.bind_all("<KeyRelease>", self.on_key_release)
+        root.bind_all("<FocusOut>", self.clear_held_movement_keys)
         self.draw()
         self.show_loading_dialog()
         root.after(200, self.start_guardian_warmup)
@@ -506,18 +520,12 @@ class GameWindow:
             return
 
         key = event.keysym.lower()
-        directions = {
-            "w": "w",
-            "a": "a",
-            "s": "s",
-            "d": "d",
-            "up": "w",
-            "left": "a",
-            "down": "s",
-            "right": "d",
-        }
-        if key in directions:
-            move(self.player, directions[key])
+        if key in MOVEMENT_KEYS:
+            self.held_movement_keys.add(key)
+            move(
+                self.player,
+                {MOVEMENT_KEYS[held_key] for held_key in self.held_movement_keys},
+            )
             self.draw()
             place = nearby_place(self.player)
             is_near_guard = place is not None and place.kind == "guard"
@@ -528,6 +536,7 @@ class GameWindow:
             ):
                 self.open_guard_dialog()
             self.guard_was_nearby = is_near_guard
+            return
         elif key == "e":
             place = nearby_place(self.player)
             if place is not None and place.kind == "guard":
@@ -543,6 +552,13 @@ class GameWindow:
             self.draw()
             if self.won:
                 self.message_label.config(fg="#86efac")
+
+    def on_key_release(self, event: tk.Event) -> None:
+        self.held_movement_keys.discard(event.keysym.lower())
+
+    def clear_held_movement_keys(self, event: tk.Event) -> None:
+        if event.type == tk.EventType.FocusOut:
+            self.held_movement_keys.clear()
 
     def close_game(self) -> None:
         self.close_guard_dialog()
@@ -973,6 +989,8 @@ class GameWindow:
                 if self.guardian_status is not None:
                     self.guardian_status.config(text="Tina spricht ...")
         else:
+            if not isinstance(result, str):
+                raise TypeError("Die lokale KI hat eine ungültige Fehlermeldung geliefert.")
             self.append_guardian_text("Fehler", result)
             if self.guardian_status is not None:
                 self.guardian_status.config(text="Die lokale KI konnte nicht antworten.")
