@@ -2,9 +2,11 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $project = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pythonDirectory = Join-Path $project ".runtime\python312"
-$ollamaDirectory = Join-Path $project "tools\ollama"
-$ollamaArchive = Join-Path $project ".runtime\ollama-windows-amd64.zip"
-$modelPath = Join-Path $project "models\Qwen3-VL-4B-Instruct-Uncensored.Q4_K_M.gguf"
+$llamaDirectory = Join-Path $project "tools\llama.cpp"
+$llamaServer = Join-Path $llamaDirectory "llama-server.exe"
+$llamaVulkanLibrary = Join-Path $llamaDirectory "ggml-vulkan.dll"
+$llamaArchive = Join-Path $project ".runtime\llama-b11718-bin-win-vulkan-x64.zip"
+$modelPath = Join-Path $project "models\Yumenko-Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 $pythonInstaller = Join-Path $project ".runtime\python-3.12.10-amd64.exe"
 $pythonExecutable = Join-Path $pythonDirectory "python.exe"
 $voiceDirectory = Join-Path $project ".runtime\voice"
@@ -13,6 +15,18 @@ $kokoroDirectory = Join-Path $voiceDirectory "kokoro"
 
 New-Item -ItemType Directory -Force (Join-Path $project ".runtime") | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $project "models") | Out-Null
+
+if (-not (Test-Path $modelPath)) {
+    throw (
+        "Das trainierte Yumenko-Modell fehlt: $modelPath`n" +
+        "Kopiere Yumenko-Qwen3-4B-Instruct-2507-Q4_K_M.gguf in diesen Ordner."
+    )
+}
+$expectedModelHash = "80647F2EE030B7336036ACF21C19D0E5139F9AD36A71BD5E6E7E50EDDFA648A6"
+$actualModelHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $modelPath).Hash
+if ($actualModelHash -ne $expectedModelHash) {
+    throw "Die SHA-256-Prüfung des trainierten Yumenko-Modells ist fehlgeschlagen."
+}
 
 if (-not (Test-Path $pythonDirectory)) {
     if (-not (Test-Path $pythonInstaller)) {
@@ -45,45 +59,25 @@ if (-not (Test-Path (Join-Path $pythonDirectory "pythonw.exe"))) {
     throw "Die lokale Python-Installation ist unvollständig: $pythonDirectory"
 }
 
-if (-not (Test-Path (Join-Path $ollamaDirectory "ollama.exe"))) {
-    if (-not (Test-Path $ollamaArchive)) {
-        Write-Host "Lade portable Ollama-Laufzeit mit NVIDIA-Bibliotheken herunter (ca. 1,4 GB)..."
+if (-not (Test-Path $llamaServer) -or -not (Test-Path $llamaVulkanLibrary)) {
+    if (-not (Test-Path $llamaArchive)) {
+        Write-Host "Lade llama.cpp mit Vulkan-GPU-Unterstützung herunter..."
         Invoke-WebRequest `
-            -Uri "https://github.com/ollama/ollama/releases/download/v0.40.6/ollama-windows-amd64.zip" `
-            -OutFile $ollamaArchive
+            -Uri "https://github.com/ggml-org/llama.cpp/releases/download/b11718/llama-b11718-bin-win-vulkan-x64.zip" `
+            -OutFile $llamaArchive
     }
-    $ollamaHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ollamaArchive).Hash
-    if ($ollamaHash -ne "E359637575302F288D76C0007C408A4BE9C7376D59C4F28684D63B232A44B427") {
-        throw "Die SHA-256-Prüfung der Ollama-Laufzeit ist fehlgeschlagen."
+    $llamaHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $llamaArchive).Hash
+    if ($llamaHash -ne "237E5736031A9CDCF9EFF54E1F4E9BD871945DE1D56EC542ECB9EBAF8D45BDB6") {
+        throw "Die SHA-256-Prüfung der llama.cpp-Laufzeit ist fehlgeschlagen."
     }
-    Write-Host "Entpacke Ollama in den Projektordner..."
-    New-Item -ItemType Directory -Force $ollamaDirectory | Out-Null
-    Expand-Archive -Path $ollamaArchive -DestinationPath $ollamaDirectory -Force
-    Remove-Item -LiteralPath $ollamaArchive -Force
+    Write-Host "Entpacke llama.cpp mit Vulkan-Unterstützung..."
+    New-Item -ItemType Directory -Force $llamaDirectory | Out-Null
+    Expand-Archive -Path $llamaArchive -DestinationPath $llamaDirectory -Force
+    Remove-Item -LiteralPath $llamaArchive -Force
 }
 
-if (-not (Test-Path (Join-Path $ollamaDirectory "ollama.exe"))) {
-    throw "ollama.exe wurde im heruntergeladenen Archiv nicht gefunden."
-}
-
-if (-not (Test-Path $modelPath)) {
-    Write-Host "Lade Yumenkos Modell herunter (ca. 2,5 GB)..."
-    $temporaryModel = "$modelPath.download"
-    Invoke-WebRequest `
-        -Uri "https://huggingface.co/mradermacher/Qwen3-VL-4B-Instruct-Uncensored-GGUF/resolve/6d93457e019e051d38a6268f9884ece33efdb258/Qwen3-VL-4B-Instruct-Uncensored.Q4_K_M.gguf" `
-        -OutFile $temporaryModel
-    $model = Get-Item -LiteralPath $temporaryModel
-    if ($model.Length -ne 2497282496) {
-        Remove-Item -LiteralPath $temporaryModel -Force
-        throw "Modell-Download unvollständig: $($model.Length) Bytes statt 2497282496."
-    }
-    Move-Item -LiteralPath $temporaryModel -Destination $modelPath
-}
-
-$expectedHash = "16146EB3978364E89593C2D9F5A0B905F528733B5FA5AFA0BD5E25F4D8AD6848"
-$actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $modelPath).Hash
-if ($actualHash -ne $expectedHash) {
-    throw "Die SHA-256-Prüfung des Modells ist fehlgeschlagen."
+if (-not (Test-Path $llamaServer) -or -not (Test-Path $llamaVulkanLibrary)) {
+    throw "llama.cpp oder die Vulkan-GPU-Bibliothek fehlt: $llamaDirectory"
 }
 
 Write-Host "Richte lokale Spracherkennung und Kokoro-Sprachwiedergabe ein..."
@@ -143,9 +137,9 @@ if ($kokoroVoiceHash -ne "0AB5709B8FFAB19BFD849CD11D98F75B60AF7733253AD0D67B1238
     throw "Die SHA-256-Prüfung der Kokoro-Stimme ist fehlgeschlagen."
 }
 
-$ollamaVersion = & (Join-Path $ollamaDirectory "ollama.exe") --version
+$llamaVersion = & $llamaServer --version
 if ($LASTEXITCODE -ne 0) {
-    throw "Die portable Ollama-Laufzeit konnte nicht ausgeführt werden."
+    throw "llama.cpp konnte nicht ausgeführt werden."
 }
 
-Write-Host "Setup vollständig. $ollamaVersion"
+Write-Host "Setup vollständig. $llamaVersion"

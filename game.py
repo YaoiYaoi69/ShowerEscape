@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from math import gcd
 from pathlib import Path
 
-from guardian_ai import GuardianAI
+from emotion_tags import parse_emotion_tags
+from guardian_ai import GuardianAI, GuardianResponse
 from voice_chat import VoiceChat, VoiceEvent
 
 
@@ -21,6 +22,15 @@ WORLD_HEIGHT = GRID_ROWS * TILE_SIZE
 PLAYER_SIZE = round(28 * SCALE_FACTOR)
 MOVE_DISTANCE = round(12 * SCALE_FACTOR)
 TILE_IMAGE_DIR = Path(__file__).resolve().parent / "assets" / "tiles"
+EMOTION_IMAGE_DIR = Path(__file__).resolve().parent / "assets" / "emotions"
+EMOTION_IMAGE_FILES = {
+    "angry": "angry.png",
+    "embarrassed": "embarrased.png",
+    "happy": "happy.png",
+    "scared": "scared.png",
+    "surprised": "surprised.png",
+}
+EMOTION_IMAGE_MAX_SIZE = 520
 
 # Use (column, row): "filename.png" entries to assign individual backgrounds.
 BACKGROUND_TILES: dict[tuple[int, int], str] = {
@@ -53,10 +63,27 @@ def scale_coordinate(value: int) -> int:
     return round(value * SCALE_FACTOR)
 
 
+def guardian_dialog_dimensions(
+    screen_width: int,
+    screen_height: int,
+) -> tuple[int, int, int, int]:
+    portrait_size = min(
+        EMOTION_IMAGE_MAX_SIZE,
+        max(160, (screen_width - 120) // 2),
+        max(160, screen_height - 204),
+    )
+    chat_width = portrait_size
+    window_width = portrait_size * 2 + 96
+    window_height = min(screen_height - 24, portrait_size + 180)
+    return portrait_size, chat_width, window_width, window_height
+
+
 @dataclass
 class Player:
     x: int = scale_coordinate(120)
     y: int = scale_coordinate(120)
+    has_towel: bool = False
+    towel_delivered: bool = False
     has_key: bool = False
 
 
@@ -71,9 +98,14 @@ class Place:
 
 
 PLACES = [
-    Place("Truhe", 216, 120, "Eine alte Truhe. Darin liegt ein kleiner Messingschluessel.", "chest"),
-    Place("Schild", 408, 168, "Auf dem Schild steht: Finde den Schluessel und suche den Ausgang im Osten.", "sign"),
-    Place("Yumenko", 600, 312, "Yumenko sagt: Der Ausgang liegt ganz im Osten. Ohne Schluessel bleibt er zu.", "guard"),
+    Place("Handtuch", 216, 120, "Ein sauberes Handtuch. Yumenko braucht es.", "towel"),
+    Place(
+        "Yumenko",
+        600,
+        312,
+        "Yumenko haelt den Schluessel und moechte zuerst ihr Handtuch haben.",
+        "guard",
+    ),
     Place("Ausgang", 696, 72, "Der Ausgang ist verschlossen.", "exit"),
 ]
 
@@ -147,16 +179,38 @@ def interact(player: Player) -> tuple[str, bool]:
     if place is None:
         return "Hier ist nichts zum Interagieren. Geh naeher an ein Objekt heran.", False
 
-    if place.kind == "chest":
+    if place.kind == "towel":
         if place.used:
-            return "Die Truhe ist leer.", False
-        player.has_key = True
+            return "Hier liegt kein Handtuch mehr.", False
+        if player.has_towel:
+            return "Du hast das Handtuch bereits.", False
+        player.has_towel = True
         place.used = True
-        return "Du hast den Messingschluessel gefunden!", False
+        return "Du hast Yumenkos Handtuch genommen. Bring es zu ihr.", False
+    if place.kind == "guard":
+        if not player.towel_delivered:
+            if not player.has_towel:
+                return (
+                    "Yumenko sagt: Bring mir erst mein Handtuch, dann reden wir "
+                    "ueber den Schluessel.",
+                    False,
+                )
+            player.has_towel = False
+            player.towel_delivered = True
+            return (
+                "Du gibst Yumenko ihr Handtuch. Jetzt musst du sie ueberzeugen, "
+                "dir den Schluessel zu geben.",
+                False,
+            )
+        return "Yumenko wartet darauf, dass du sie im Chat ueberzeugst.", False
     if place.kind == "exit":
         if player.has_key:
             return "Mit dem Schluessel oeffnest du den Ausgang. Geschafft!", True
-        return "Der Ausgang ist verschlossen. Vielleicht liegt der Schluessel in der Truhe.", False
+        return (
+            "Der Ausgang ist verschlossen. Ueberzeuge Yumenko, dir ihren "
+            "Schluessel zu geben.",
+            False,
+        )
     return place.description, False
 
 
@@ -192,9 +246,11 @@ class GameWindow:
             Path(__file__).resolve().parent,
             Path(__file__).resolve().parent
             / "models"
-            / "Qwen3-VL-4B-Instruct-Uncensored.Q4_K_M.gguf",
+            / "Yumenko-Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
         )
         self.guardian_history: list[dict[str, str]] = []
+        self.guardian_emotions: tuple[str, ...] = ()
+        self.guardian_emotion: str | None = None
         self.guardian_busy = False
         self.guardian_greeting_started = False
         self.guardian_model_ready = False
@@ -203,11 +259,16 @@ class GameWindow:
         self.guard_dialog: tk.Toplevel | None = None
         self.guard_was_nearby = False
         self.guardian_messages: tk.Text | None = None
+        self.guardian_emotion_label: tk.Label | None = None
+        self.guardian_emotion_title: tk.Label | None = None
+        self.guardian_emotion_images: dict[str, tk.PhotoImage] = {}
         self.guardian_input: tk.Entry | None = None
         self.guardian_chat_button: tk.Button | None = None
         self.guardian_status: tk.Label | None = None
         self.guardian_send_button: tk.Button | None = None
-        self.guardian_queue: Queue[tuple[bool, str | None, str]] = Queue()
+        self.guardian_queue: Queue[
+            tuple[bool, str | None, GuardianResponse | str]
+        ] = Queue()
         self.guardian_warmup_queue: Queue[tuple[bool, str | None]] = Queue()
         self.guardian_warmup_started = False
         self.loading_dialog: tk.Toplevel | None = None
@@ -244,7 +305,10 @@ class GameWindow:
 
         self.message_label = tk.Label(
             root,
-            text="Finde den Schluessel und erreiche den Ausgang.",
+            text=(
+                "Finde Yumenkos Handtuch, bring es ihr und ueberzeuge sie, "
+                "dir den Schluessel zu geben."
+            ),
             font=("Segoe UI", 10),
             fg="#e2e8f0",
             bg="#1c2630",
@@ -375,10 +439,23 @@ class GameWindow:
             x0, y0 = place_x - place_half_size, place_y - place_half_size
             x1, y1 = place_x + place_half_size, place_y + place_half_size
             outline_width = round(2 * SCALE_FACTOR)
-            if place.kind == "chest":
-                color = "#64748b" if place.used else "#a16207"
+            if place.kind == "towel":
                 self.canvas.create_rectangle(
-                    x0, y0, x1, y1, fill=color, outline="#fbbf24", width=outline_width
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    fill="#f8fafc" if not place.used else "#64748b",
+                    outline="#38bdf8",
+                    width=outline_width,
+                )
+                self.canvas.create_line(
+                    x0 + scale_coordinate(6),
+                    place_y,
+                    x1 - scale_coordinate(6),
+                    place_y,
+                    fill="#38bdf8",
+                    width=outline_width,
                 )
             elif place.kind == "exit":
                 self.canvas.create_rectangle(
@@ -388,24 +465,6 @@ class GameWindow:
                     y1 + scale_coordinate(8),
                     fill="#1e293b",
                     outline="#cbd5e1",
-                    width=outline_width,
-                )
-            elif place.kind == "sign":
-                self.canvas.create_rectangle(
-                    place_x - scale_coordinate(3),
-                    place_y,
-                    place_x + scale_coordinate(3),
-                    place_y + scale_coordinate(18),
-                    fill="#78350f",
-                    outline="",
-                )
-                self.canvas.create_rectangle(
-                    x0 - scale_coordinate(4),
-                    y0 - scale_coordinate(4),
-                    x1 + scale_coordinate(4),
-                    y0 + scale_coordinate(12),
-                    fill="#a16207",
-                    outline="#fbbf24",
                     width=outline_width,
                 )
             else:
@@ -425,7 +484,10 @@ class GameWindow:
         )
 
         self.key_label.config(
-            text=f"Schluessel: {'Ja' if self.player.has_key else 'Nein'}"
+            text=(
+                f"Handtuch: {'Ja' if self.player.has_towel else 'Nein'}"
+                f"    Schluessel: {'Ja' if self.player.has_key else 'Nein'}"
+            )
         )
 
     def on_key(self, event: tk.Event) -> None:
@@ -459,13 +521,22 @@ class GameWindow:
             self.draw()
             place = nearby_place(self.player)
             is_near_guard = place is not None and place.kind == "guard"
-            if is_near_guard and not self.guard_was_nearby:
+            if (
+                is_near_guard
+                and self.player.towel_delivered
+                and not self.guard_was_nearby
+            ):
                 self.open_guard_dialog()
             self.guard_was_nearby = is_near_guard
         elif key == "e":
             place = nearby_place(self.player)
             if place is not None and place.kind == "guard":
-                self.open_guard_dialog()
+                if self.player.towel_delivered:
+                    self.open_guard_dialog()
+                else:
+                    message, _ = interact(self.player)
+                    self.message_label.config(text=message)
+                    self.draw()
                 return
             message, self.won = interact(self.player)
             self.message_label.config(text=message)
@@ -562,15 +633,29 @@ class GameWindow:
 
         dialog = tk.Toplevel(self.root)
         dialog.title("Yumenko")
-        dialog.geometry("520x440")
         dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.configure(bg="#1c2630")
         dialog.update_idletasks()
-        x = max(0, (dialog.winfo_screenwidth() - 520) // 2)
-        y = max(0, (dialog.winfo_screenheight() - 440) // 2)
-        dialog.geometry(f"520x440+{x}+{y}")
         self.guard_dialog = dialog
+        screen_width = dialog.winfo_screenwidth()
+        screen_height = dialog.winfo_screenheight()
+        if not self.guardian_emotion_images:
+            target_image_size = guardian_dialog_dimensions(
+                screen_width,
+                screen_height,
+            )[0]
+            self.guardian_emotion_images = self.load_emotion_images(
+                target_image_size
+            )
+        portrait_size = self.guardian_emotion_images["scared"].width()
+        _, chat_width, window_width, window_height = guardian_dialog_dimensions(
+            screen_width,
+            screen_height,
+        )
+        x = max(0, (screen_width - window_width) // 2)
+        y = max(0, (screen_height - window_height) // 2)
+        dialog.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
         if self.voice_chat is None:
             self.voice_chat = VoiceChat(
@@ -580,40 +665,157 @@ class GameWindow:
             self.voice_error = None
             self.voice_ready = False
             self.voice_chat.start()
+        header = tk.Frame(dialog, bg="#1c2630")
+        header.pack(side="top", fill="x", padx=18, pady=(14, 8))
+        tk.Label(
+            header,
+            text="YUMENKO",
+            font=("Segoe UI", 16, "bold"),
+            fg="#f1f5f9",
+            bg="#1c2630",
+        ).pack(side="left")
+        tk.Label(
+            header,
+            text="GESPRÄCH",
+            font=("Segoe UI", 9, "bold"),
+            fg="#a78bfa",
+            bg="#1c2630",
+        ).pack(side="left", padx=(12, 0), pady=(4, 0))
+
+        panels = tk.Frame(dialog, bg="#1c2630")
+        panels.pack(side="top", fill="both", expand=True, padx=18)
+        chat_panel = tk.Frame(
+            panels,
+            bg="#1c2630",
+            width=chat_width,
+            height=portrait_size + 24,
+        )
+        chat_panel.pack(side="left", fill="both", expand=False)
+        chat_panel.pack_propagate(False)
+        portrait_panel = tk.Frame(
+            panels,
+            bg="#1c2630",
+            width=portrait_size,
+            height=portrait_size + 24,
+        )
+        portrait_panel.pack(side="right", fill="both", padx=(16, 0))
+        portrait_panel.pack_propagate(False)
+        tk.Label(
+            chat_panel,
+            text="CHAT",
+            font=("Segoe UI", 9, "bold"),
+            fg="#94a3b8",
+            bg="#1c2630",
+            anchor="w",
+        ).pack(fill="x", pady=(0, 7))
+        self.guardian_emotion_title = tk.Label(
+            portrait_panel,
+            text=(self.guardian_emotion or "scared").upper(),
+            font=("Segoe UI", 9, "bold"),
+            fg="#c4b5fd",
+            bg="#1c2630",
+            anchor="w",
+        )
+        self.guardian_emotion_title.pack(fill="x", pady=(0, 7))
+
+        chat_body = tk.Frame(
+            chat_panel,
+            bg="#0f172a",
+            width=chat_width,
+            height=portrait_size,
+            highlightthickness=1,
+            highlightbackground="#334155",
+        )
+        chat_body.pack(fill="both", expand=True)
+        chat_body.pack_propagate(False)
+        scrollbar = tk.Scrollbar(
+            chat_body,
+            bg="#1e293b",
+            troughcolor="#0f172a",
+            activebackground="#475569",
+            relief="flat",
+            borderwidth=0,
+        )
+        scrollbar.pack(side="right", fill="y")
         self.guardian_messages = tk.Text(
-            dialog,
+            chat_body,
             state="disabled",
             wrap="word",
-            font=("Segoe UI", 10),
+            font=("Segoe UI", 11),
             bg="#0f172a",
             fg="#e2e8f0",
-            padx=10,
-            pady=10,
+            insertbackground="#f8fafc",
+            padx=14,
+            pady=14,
+            relief="flat",
+            borderwidth=0,
+            yscrollcommand=scrollbar.set,
         )
+        self.guardian_messages.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.guardian_messages.yview)
+        portrait_frame = tk.Frame(
+            portrait_panel,
+            bg="#0f172a",
+            width=portrait_size,
+            height=portrait_size,
+            highlightthickness=1,
+            highlightbackground="#334155",
+        )
+        portrait_frame.pack()
+        portrait_frame.pack_propagate(False)
+        self.guardian_emotion_label = tk.Label(
+            portrait_frame,
+            image=self.guardian_emotion_images["scared"],
+            bg="#0f172a",
+            borderwidth=0,
+        )
+        self.guardian_emotion_label.pack(fill="both", expand=True)
         self.guardian_status = tk.Label(
             dialog,
             text="Yumenkos Sprachchat wird vorbereitet ...",
-            fg="#94a3b8",
+            font=("Segoe UI", 9),
+            fg="#a5b4c7",
             bg="#1c2630",
             justify="left",
-            wraplength=480,
+            wraplength=window_width - 36,
         )
 
-        input_row = tk.Frame(dialog, bg="#1c2630")
-        input_row.pack(side="bottom", fill="x", padx=12, pady=12)
-        self.guardian_input = tk.Entry(input_row, font=("Segoe UI", 11))
-        self.guardian_input.pack(side="left", fill="x", expand=True, ipady=6)
+        input_row = tk.Frame(
+            dialog,
+            bg="#0f172a",
+            highlightthickness=1,
+            highlightbackground="#334155",
+        )
+        input_row.pack(side="bottom", fill="x", padx=18, pady=(8, 14))
+        self.guardian_input = tk.Entry(
+            input_row,
+            font=("Segoe UI", 11),
+            fg="#f1f5f9",
+            bg="#0f172a",
+            insertbackground="#f8fafc",
+            relief="flat",
+            borderwidth=0,
+        )
+        self.guardian_input.pack(side="left", fill="x", expand=True, padx=12, ipady=10)
         self.guardian_send_button = tk.Button(
-            input_row, text="Senden", command=self.send_guardian_message
+            input_row,
+            text="Senden",
+            command=self.send_guardian_message,
+            font=("Segoe UI", 10, "bold"),
+            fg="#ffffff",
+            bg="#6d28d9",
+            activebackground="#7c3aed",
+            activeforeground="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=18,
+            pady=8,
         )
-        self.guardian_send_button.pack(side="left", padx=(8, 0))
-        self.guardian_status.pack(side="bottom", anchor="w", padx=14)
-        self.guardian_messages.pack(
-            side="top", fill="both", expand=True, padx=12, pady=(12, 6)
-        )
+        self.guardian_send_button.pack(side="right", padx=6, pady=6)
+        self.guardian_status.pack(side="bottom", anchor="w", padx=20, pady=(8, 0))
+        self.update_guardian_emotion(self.guardian_emotion or "scared")
         self.guardian_input.bind("<Return>", self.send_guardian_message)
         dialog.bind("<Return>", self.send_guardian_message)
-        dialog.bind("<Escape>", lambda _event: self.close_guard_dialog())
         dialog.protocol("WM_DELETE_WINDOW", self.close_guard_dialog)
         dialog.grab_set()
         dialog.deiconify()
@@ -624,7 +826,10 @@ class GameWindow:
 
         for entry in self.guardian_history:
             speaker = "Du" if entry["role"] == "user" else "Yumenko"
-            self.append_guardian_text(speaker, entry["content"])
+            text = entry["content"]
+            if entry["role"] == "assistant":
+                text, _ = parse_emotion_tags(text)
+            self.append_guardian_text(speaker, text)
         if not self.guardian_greeting_started:
             self.guardian_greeting_started = True
             self.request_guardian_reply(None)
@@ -654,6 +859,8 @@ class GameWindow:
             self.guard_dialog.destroy()
         self.guard_dialog = None
         self.guardian_messages = None
+        self.guardian_emotion_label = None
+        self.guardian_emotion_title = None
         self.guardian_input = None
         self.guardian_status = None
         self.guardian_send_button = None
@@ -665,6 +872,29 @@ class GameWindow:
         self.guardian_messages.insert("end", f"{speaker}: {text}\n\n")
         self.guardian_messages.config(state="disabled")
         self.guardian_messages.see("end")
+
+    @staticmethod
+    def load_emotion_images(max_size: int = EMOTION_IMAGE_MAX_SIZE) -> dict[str, tk.PhotoImage]:
+        images: dict[str, tk.PhotoImage] = {}
+        for emotion, filename in EMOTION_IMAGE_FILES.items():
+            image_path = EMOTION_IMAGE_DIR / filename
+            if not image_path.is_file():
+                raise FileNotFoundError(f"Emotionsbild nicht gefunden: {image_path}")
+            image = tk.PhotoImage(file=str(image_path))
+            factor = max(
+                1,
+                (max(image.width(), image.height()) + max_size - 1) // max_size,
+            )
+            images[emotion] = image.subsample(factor, factor)
+        return images
+
+    def update_guardian_emotion(self, emotion: str) -> None:
+        if self.guardian_emotion_label is None:
+            return
+        image = self.guardian_emotion_images[emotion]
+        self.guardian_emotion_label.config(image=image)
+        if self.guardian_emotion_title is not None:
+            self.guardian_emotion_title.config(text=emotion.upper())
 
     def send_guardian_message(self, _event: tk.Event | None = None) -> None:
         if (
@@ -682,6 +912,7 @@ class GameWindow:
 
     def request_guardian_reply(self, message: str | None) -> None:
         self.guardian_busy = True
+        self.guardian_emotions = ()
         if self.voice_chat is not None:
             self.voice_chat.pause()
             self.voice_chat.cancel_speech()
@@ -695,10 +926,13 @@ class GameWindow:
             )
         history = list(self.guardian_history)
         has_key = self.player.has_key
+        towel_delivered = self.player.towel_delivered
 
         def generate() -> None:
             try:
-                reply = self.guardian_ai.reply(message, has_key, history)
+                reply = self.guardian_ai.reply(
+                    message, has_key, history, towel_delivered=towel_delivered
+                )
             except Exception as error:
                 self.guardian_queue.put((False, message, str(error)))
             else:
@@ -716,12 +950,26 @@ class GameWindow:
             return
 
         if succeeded:
+            if not isinstance(result, GuardianResponse):
+                raise TypeError("Die lokale KI hat ein ungültiges Antwortformat geliefert.")
             if message is not None:
                 self.guardian_history.append({"role": "user", "content": message})
-            self.guardian_history.append({"role": "assistant", "content": result})
-            self.append_guardian_text("Yumenko", result)
+            self.guardian_history.append(
+                {"role": "assistant", "content": result.tagged_text}
+            )
+            self.guardian_emotions = result.emotions
+            if result.emotions:
+                self.guardian_emotion = result.emotions[-1]
+                self.update_guardian_emotion(self.guardian_emotion)
+            self.append_guardian_text("Yumenko", result.text)
+            if result.key_given:
+                self.player.has_key = True
+                self.message_label.config(
+                    text="Yumenko gibt dir den Schluessel. Geh zum Ausgang im Osten."
+                )
+                self.draw()
             if self.voice_chat is not None:
-                self.voice_chat.speak(result)
+                self.voice_chat.speak(result.text)
                 if self.guardian_status is not None:
                     self.guardian_status.config(text="Yumenko spricht ...")
         else:
